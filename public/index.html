@@ -689,12 +689,15 @@ async function startAnalyze() {
   setStatus('analyze-status', '分析中', 'running');
 
   try {
-    // 1. 各動画をGeminiで分析してスコアリング
+    // 1. 各動画をGeminiで分析してスコアリング（無料枠15req/分に収まるよう4秒間隔）
     const scores = [];
     for (let i = 0; i < videoFiles.length; i++) {
+      const remaining = videoFiles.length - i;
+      const estSec = remaining * 4;
+      const estLabel = estSec >= 60 ? `約${Math.ceil(estSec/60)}分` : `約${estSec}秒`;
       setProgress('analyze-prog-fill', 'analyze-prog-label',
         Math.round((i / videoFiles.length) * 50),
-        `動画を分析中... ${i+1}/${videoFiles.length}本目`
+        `動画を分析中... ${i+1}/${videoFiles.length}本目（残り${estLabel}）`
       );
       const score = await analyzeVideoWithGemini(videoFiles[i], i);
       scores.push(score);
@@ -703,6 +706,8 @@ async function startAnalyze() {
         scoreEl.textContent = `${score.total}点`;
         if (score.total >= 70) scoreEl.classList.add('high');
       }
+      // レート制限対策：最後の1本以外は4秒待機
+      if (i < videoFiles.length - 1) await new Promise(r => setTimeout(r, 4000));
     }
 
     setProgress('analyze-prog-fill', 'analyze-prog-label', 55, '良シーンを選定中...');
@@ -814,7 +819,7 @@ face_score=子ども・人の顔が鮮明か, motion_score=動きが多くアク
     ];
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1021,7 +1026,7 @@ ${sceneInfo}
 - スタイルタグは英語で3〜5個`;
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
