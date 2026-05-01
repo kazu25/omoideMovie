@@ -757,39 +757,70 @@ async function startAnalyze() {
   }
 }
 
-// Geminiで1本の動画を分析
+// 動画からサムネイル画像を3枚抽出してGeminiで分析（動画送信より軽量・高速）
+async function captureFrames(file, times) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video');
+    v.src = URL.createObjectURL(file);
+    v.muted = true;
+    v.playsInline = true;
+    const frames = [];
+    let idx = 0;
+
+    const capture = () => {
+      if (idx >= times.length) { resolve(frames); return; }
+      v.currentTime = times[idx];
+      v.onseeked = () => {
+        const c = document.createElement('canvas');
+        // サムネは小さめで十分（APIコスト削減）
+        c.width = 480; c.height = Math.round(480 * v.videoHeight / (v.videoWidth || 480));
+        c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+        frames.push(c.toDataURL('image/jpeg', 0.7).split(',')[1]);
+        idx++;
+        capture();
+      };
+    };
+
+    v.onloadedmetadata = () => {
+      // 動画の長さに合わせてキャプチャ位置を調整
+      const dur = v.duration || 5;
+      const adjusted = times.map(t => Math.min(t, dur * 0.9));
+      times = adjusted;
+      capture();
+    };
+    v.onerror = () => resolve([]);
+  });
+}
+
 async function analyzeVideoWithGemini(file, index) {
   try {
-    const base64 = await fileToBase64(file);
-    const mime = file.type || 'video/mp4';
+    // 動画の前半・中盤・後半の3フレームを画像として送る
+    const v = document.createElement('video');
+    v.src = URL.createObjectURL(file);
+    v.muted = true;
+    await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
+    const dur = v.duration || 10;
+    const frames = await captureFrames(file, [dur * 0.15, dur * 0.5, dur * 0.85]);
+
+    if (frames.length === 0) throw new Error('フレーム取得失敗');
+
+    // 3枚の画像をGeminiに送って動画全体を評価させる
+    const parts = [
+      { text: `この動画から抽出した3枚のフレーム画像（前半・中盤・後半）を見て、動画全体を評価してください。
+マークダウン不使用。以下のJSONのみで回答してください:
+{"face_score":0-40,"motion_score":0-30,"brightness_score":0-20,"interest_score":0-10,"total":0-100,"best_moment_sec":${Math.round(dur*0.5)},"clip_duration_sec":5,"reason":"日本語一言"}
+face_score=子ども・人の顔が鮮明か, motion_score=動きが多くアクティブか, brightness_score=明るく鮮明か, interest_score=印象的な瞬間があるか` },
+      ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
+    ];
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          contents: [{
-            parts: [
-              { text: `この動画を分析して、以下のJSON形式のみで回答してください。マークダウン不要。
-{
-  "face_score": 0-40,
-  "motion_score": 0-30,
-  "brightness_score": 0-20,
-  "interest_score": 0-10,
-  "total": 0-100,
-  "best_moment_sec": 最も良いシーンの開始秒数,
-  "clip_duration_sec": 使うべき秒数(3-8秒),
-  "reason": "日本語で理由を一言"
-}
-face_score: 子ども・人の顔がはっきり映っているか
-motion_score: 動きが多くアクティブか
-brightness_score: 明るく鮮明か
-interest_score: 興味深い瞬間があるか` },
-              { inline_data: { mime_type: mime, data: base64 } }
-            ]
-          }],
-          generationConfig: { temperature: 0.2, maxOutputTokens: 256 }
+          contents: [{ parts }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 200 }
         })
       }
     );
@@ -804,23 +835,42 @@ interest_score: 興味深い瞬間があるか` },
     const clean = text.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
     return {
-      total: parsed.total || 50,
+      total: Math.round(parsed.total || 50),
       face: parsed.face_score || 0,
       motion: parsed.motion_score || 0,
       brightness: parsed.brightness_score || 0,
       interest: parsed.interest_score || 0,
       bestMoment: parsed.best_moment_sec || 0,
-      clipDuration: parsed.clip_duration_sec || 5,
+      clipDuration: Math.min(parsed.clip_duration_sec || 5, 8),
       reason: parsed.reason || ''
     };
   } catch(e) {
-    // Gemini分析失敗時はデフォルトスコア
     console.warn('Gemini analysis failed for video', index, e.message);
-    return {
-      total: 50 + Math.random() * 20,
-      face: 20, motion: 15, brightness: 10, interest: 5,
-      bestMoment: 0, clipDuration: 5, reason: '分析できませんでした'
-    };
+    // フォールバック：ブラウザで明るさ・動きを簡易推定
+    return await localFallbackScore(file, index);
+  }
+}
+
+// Gemini失敗時のローカルフォールバック（Canvas画素解析）
+async function localFallbackScore(file, index) {
+  try {
+    const frames = await captureFrames(file, [0.3, 0.6]);
+    let brightness = 50;
+    if (frames.length > 0) {
+      const c = document.createElement('canvas');
+      c.width = 80; c.height = 45;
+      const img = new Image();
+      await new Promise(r => { img.onload = r; img.src = 'data:image/jpeg;base64,' + frames[0]; });
+      c.getContext('2d').drawImage(img, 0, 0, 80, 45);
+      const d = c.getContext('2d').getImageData(0, 0, 80, 45).data;
+      let sum = 0;
+      for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i+1] + d[i+2]) / 3;
+      brightness = Math.round((sum / (d.length / 4)) / 255 * 100);
+    }
+    const total = Math.round(40 + brightness * 0.3 + Math.random() * 15);
+    return { total, face: 15, motion: 15, brightness: Math.round(brightness*0.2), interest: 5, bestMoment: 0, clipDuration: 5, reason: 'ローカル解析' };
+  } catch {
+    return { total: 55, face: 15, motion: 15, brightness: 15, interest: 10, bestMoment: 0, clipDuration: 5, reason: '解析スキップ' };
   }
 }
 
@@ -920,15 +970,28 @@ function waitFrame(ms) {
 //  LYRICS GENERATION
 // ═══════════════════════════════════════
 async function generateLyricsWithGemini(topVideo, selectedScenes, allScores) {
-  const base64 = await fileToBase64(topVideo);
-  const mime = topVideo.type || 'video/mp4';
-
+  // 動画フルサイズではなく、各シーンの代表フレームを画像として送る
   const sceneInfo = selectedScenes.map((s, i) => {
     const sec = selectedScenes.slice(0, i).reduce((a, b) => a + b.actualDuration, 0);
     return `${Math.round(sec)}〜${Math.round(sec + s.actualDuration)}秒: ${s.reason || 'シーン' + (i+1)}`;
   }).join('\n');
 
-  const prompt = `この動画と以下のシーン情報をもとに、SUNO AI用の歌詞を作ってください。
+  // 上位3シーンから代表フレームを1枚ずつ取得（最大3枚）
+  const frameFiles = selectedScenes.slice(0, 3).map(s => s.file);
+  const frameParts = [];
+  for (const f of frameFiles) {
+    const v = document.createElement('video');
+    v.src = URL.createObjectURL(f);
+    v.muted = true;
+    await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
+    const dur = v.duration || 5;
+    const imgs = await captureFrames(f, [dur * 0.4]);
+    if (imgs.length > 0) {
+      frameParts.push({ inline_data: { mime_type: 'image/jpeg', data: imgs[0] } });
+    }
+  }
+
+  const prompt = `以下のシーン構成と画像（各シーンの代表フレーム）をもとに、SUNO AI用の歌詞を作ってください。
 
 シーン構成:
 ${sceneInfo}
@@ -958,14 +1021,14 @@ ${sceneInfo}
 - スタイルタグは英語で3〜5個`;
 
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{ parts: [
           { text: prompt },
-          { inline_data: { mime_type: mime, data: base64 } }
+          ...frameParts
         ]}],
         generationConfig: { temperature: 0.8, maxOutputTokens: 1024 }
       })
