@@ -906,39 +906,14 @@ function selectScenes(sortedScores, targetSec) {
 
 // ブラウザ上でディゾルブ合成
 async function buildCompositeVideo(scenes) {
-  const DISSOLVE_FRAMES = 12; // 約0.4秒のディゾルブ
   const FPS = 30;
-
-  // 全シーンの動画要素を準備（タイムアウト・エラー対策付き）
-  const videoEls = [];
-  for (const scene of scenes) {
-    const v = document.createElement('video');
-    v.src = URL.createObjectURL(scene.file);
-    v.muted = true;
-    v.playsInline = true;
-    v.preload = 'metadata';
-    await new Promise(resolve => {
-      const timer = setTimeout(() => resolve(), 8000);
-      v.onloadedmetadata = () => { clearTimeout(timer); resolve(); };
-      v.onerror = () => { clearTimeout(timer); resolve(); };
-      v.load();
-    });
-    videoEls.push(v);
-  }
-
-  // キャンバスは横長16:9固定（縦動画も正しく収める）
-  const W = 1280;
-  const H = 720;
-
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d');
+  const DISSOLVE_MS = 700; // ディゾルブ時間 0.7秒
 
   // アスペクト比を保ってcanvasに描画するヘルパー
-  function drawCover(ctx, video, w, h) {
+  function drawContain(ctx, video, w, h) {
     const vw = video.videoWidth  || w;
     const vh = video.videoHeight || h;
-    const scale = Math.min(w / vw, h / vh); // contain（黒帯あり・潰れなし）
+    const scale = Math.min(w / vw, h / vh);
     const dw = vw * scale;
     const dh = vh * scale;
     const dx = (w - dw) / 2;
@@ -948,14 +923,47 @@ async function buildCompositeVideo(scenes) {
     ctx.drawImage(video, dx, dy, dw, dh);
   }
 
+  // ── STEP1: 全動画を同時にロード＆シーク（描画ループ中は一切シークしない）──
+  setProgress('analyze-prog-fill', 'analyze-prog-label', 66, '動画をプリロード中...');
+
+  const videoEls = await Promise.all(scenes.map(async (scene) => {
+    const v = document.createElement('video');
+    v.src = URL.createObjectURL(scene.file);
+    v.muted = true;
+    v.playsInline = true;
+    v.preload = 'auto';
+    // メタデータ読み込み待ち
+    await new Promise(resolve => {
+      const t = setTimeout(resolve, 6000);
+      v.onloadedmetadata = () => { clearTimeout(t); resolve(); };
+      v.onerror = () => { clearTimeout(t); resolve(); };
+      v.load();
+    });
+    // ベストシーンにシーク
+    const seekTo = Math.max(0, Math.min(scene.bestMoment || 0, (v.duration || 999) - (scene.actualDuration || 5) - 0.1));
+    v.currentTime = seekTo;
+    await new Promise(resolve => {
+      const t = setTimeout(resolve, 5000);
+      v.onseeked = () => { clearTimeout(t); resolve(); };
+    });
+    return v;
+  }));
+
+  // ── STEP2: キャンバス＆レコーダーを準備 ──
+  const W = 1280, H = 720;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
   const stream = canvas.captureStream(FPS);
   const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
     ? 'video/webm;codecs=vp9' : 'video/webm';
-  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 4000000 });
+  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 5000000 });
   const chunks = [];
   rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
-  return new Promise(async (resolve, reject) => {
+  // ── STEP3: シーンを順番に描画（シーク一切なし）──
+  return new Promise(async (resolve) => {
     rec.onstop = () => {
       setProgress('analyze-prog-fill', 'analyze-prog-label', 80, '動画合成完了！歌詞を生成中...');
       resolve(new Blob(chunks, { type: 'video/webm' }));
@@ -963,69 +971,53 @@ async function buildCompositeVideo(scenes) {
     rec.start(100);
 
     for (let si = 0; si < scenes.length; si++) {
-      const scene = scenes[si];
-      const v = videoEls[si];
-      const nextV = si + 1 < scenes.length ? videoEls[si + 1] : null;
+      const scene  = scenes[si];
+      const v      = videoEls[si];
+      const nextV  = si + 1 < scenes.length ? videoEls[si + 1] : null;
 
-      // 現在の動画をベストシーンにシーク
-      v.currentTime = Math.max(0, scene.bestMoment || 0);
-      await new Promise(r => {
-        const t = setTimeout(r, 4000);
-        v.onseeked = () => { clearTimeout(t); r(); };
-      });
+      const clipMs        = Math.max(2000, (scene.actualDuration || 5) * 1000);
+      const dissolveStart = clipMs - DISSOLVE_MS;
 
-      // 次の動画も事前にシーク（ディゾルブ準備）
-      if (nextV) {
-        nextV.currentTime = Math.max(0, scenes[si + 1]?.bestMoment || 0);
-        await new Promise(r => {
-          const t = setTimeout(r, 4000);
-          nextV.onseeked = () => { clearTimeout(t); r(); };
-        });
-      }
-
-      // 現在動画を再生
+      // 現在のシーンを再生
       await v.play().catch(() => {});
+      const startTs  = performance.now();
+      let nextPlayed = false;
 
-      const clipDuration = scene.actualDuration * 1000; // ms
-      const dissolveDuration = 600; // 0.6秒 ms
-      const dissolveStartMs = clipDuration - dissolveDuration;
-      const startTs = performance.now();
-      let nextStarted = false;
-
-      // setTimeoutベースの描画ループ（バックグラウンドでも止まらない）
       await new Promise(r => {
-        const INTERVAL = 33; // 約30fps
-        const timer = setInterval(() => {
+        const loop = setInterval(() => {
           const elapsed = performance.now() - startTs;
 
-          if (elapsed >= clipDuration) {
-            clearInterval(timer);
-            v.pause();
-            if (nextV) nextV.pause();
-            setProgress('analyze-prog-fill', 'analyze-prog-label',
-              65 + Math.round(((si + 1) / scenes.length) * 15),
-              `動画を合成中... ${si + 1}/${scenes.length}本目`
-            );
-            r();
-            return;
-          }
-
-          if (elapsed >= dissolveStartMs && nextV) {
-            // ディゾルブ開始: 次の動画を再生
-            if (!nextStarted) {
-              nextStarted = true;
+          // ── ディゾルブ区間 ──
+          if (elapsed >= dissolveStart && nextV) {
+            if (!nextPlayed) {
+              nextPlayed = true;
+              // 次の動画は既にシーク済み → そのまま再生するだけ
               nextV.play().catch(() => {});
             }
-            const alpha = Math.min(1, (elapsed - dissolveStartMs) / dissolveDuration);
+            const alpha = Math.min(1, (elapsed - dissolveStart) / DISSOLVE_MS);
             ctx.globalAlpha = 1;
-            drawCover(ctx, v, W, H);
+            drawContain(ctx, v, W, H);
             ctx.globalAlpha = alpha;
-            drawCover(ctx, nextV, W, H);
+            drawContain(ctx, nextV, W, H);
             ctx.globalAlpha = 1;
+
+          // ── 通常区間 ──
           } else {
-            drawCover(ctx, v, W, H);
+            drawContain(ctx, v, W, H);
           }
-        }, INTERVAL);
+
+          // ── シーン終了 ──
+          if (elapsed >= clipMs) {
+            clearInterval(loop);
+            v.pause();
+            // nextV は次のシーンで引き続き使うので止めない
+            setProgress('analyze-prog-fill', 'analyze-prog-label',
+              66 + Math.round(((si + 1) / scenes.length) * 14),
+              `合成中... ${si + 1} / ${scenes.length} 本目`
+            );
+            r();
+          }
+        }, 1000 / FPS);
       });
     }
 
