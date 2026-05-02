@@ -699,12 +699,14 @@ async function startAnalyze() {
         Math.round((i / videoFiles.length) * 50),
         `動画を分析中... ${i+1}/${videoFiles.length}本目（残り${estLabel}）`
       );
-      const score = await analyzeVideoWithGemini(videoFiles[i], i);
-      scores.push(score);
+      const clips = await analyzeVideoWithGemini(videoFiles[i], i);
+      // 代表スコア（クリップの最高点）をUIに表示
+      const bestClipScore = Math.max(...clips.map(c => c.total));
+      scores.push(...clips);
       const scoreEl = document.getElementById(`score-${i}`);
       if (scoreEl) {
-        scoreEl.textContent = `${score.total}点`;
-        if (score.total >= 70) scoreEl.classList.add('high');
+        scoreEl.textContent = `${bestClipScore}点 (${clips.length}clip)`;
+        if (bestClipScore >= 70) scoreEl.classList.add('high');
       }
       // レート制限対策：最後の1本以外は4秒待機
       if (i < videoFiles.length - 1) await new Promise(r => setTimeout(r, 4000));
@@ -712,12 +714,8 @@ async function startAnalyze() {
 
     setProgress('analyze-prog-fill', 'analyze-prog-label', 55, '良シーンを選定中...');
 
-    // 2. スコア上位の動画からシーンを選ぶ
-    const sorted = scores
-      .map((s, i) => ({ ...s, index: i, file: videoFiles[i] }))
-      .sort((a, b) => b.total - a.total);
-
-    // 合計60秒になるよう上位から選ぶ
+    // 2. 全クリップをスコア順にソートしてシーン選定
+    const sorted = scores.sort((a, b) => b.total - a.total);
     const selected = selectScenes(sorted, 60);
 
     setProgress('analyze-prog-fill', 'analyze-prog-label', 65, '動画を合成中（ディゾルブ処理）...');
@@ -799,22 +797,32 @@ async function captureFrames(file, times) {
 
 async function analyzeVideoWithGemini(file, index) {
   try {
-    // 動画の前半・中盤・後半の3フレームを画像として送る
     const v = document.createElement('video');
     v.src = URL.createObjectURL(file);
     v.muted = true;
     await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
     const dur = v.duration || 10;
-    const frames = await captureFrames(file, [dur * 0.15, dur * 0.5, dur * 0.85]);
 
+    // 動画の長さに応じてフレーム数を決定（長い動画ほど多く抽出）
+    const numClips = dur >= 30 ? 4 : dur >= 15 ? 3 : dur >= 8 ? 2 : 1;
+    const frameTimes = Array.from({length: numClips}, (_, i) =>
+      dur * (i + 0.5) / numClips
+    );
+    const frames = await captureFrames(file, frameTimes);
     if (frames.length === 0) throw new Error('フレーム取得失敗');
 
-    // 3枚の画像をGeminiに送って動画全体を評価させる
     const parts = [
-      { text: `この動画から抽出した3枚のフレーム画像（前半・中盤・後半）を見て、動画全体を評価してください。
-マークダウン不使用。以下のJSONのみで回答してください:
-{"face_score":0-40,"motion_score":0-30,"brightness_score":0-20,"interest_score":0-10,"total":0-100,"best_moment_sec":${Math.round(dur*0.5)},"clip_duration_sec":5,"reason":"日本語一言"}
-face_score=子ども・人の顔が鮮明か, motion_score=動きが多くアクティブか, brightness_score=明るく鮮明か, interest_score=印象的な瞬間があるか` },
+      { text: `動画(${Math.round(dur)}秒)から抽出した${frames.length}枚のフレーム画像を見て評価してください。
+マークダウン不使用。以下のJSONのみで回答してください（clipsは最大${numClips}件）:
+{
+  "total": 0-100,
+  "clips": [
+    {"start_sec": 開始秒, "duration_sec": 3-8, "score": 0-100, "reason": "日本語一言"},
+    ...
+  ]
+}
+評価基準: 子ども・人の顔が鮮明(重要), 動きが多い, 明るく鮮明, 印象的な瞬間
+各フレームに対応するクリップを提案してください。動画の長さ${Math.round(dur)}秒を超えないようにしてください。` },
       ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
     ];
 
@@ -825,7 +833,7 @@ face_score=子ども・人の顔が鮮明か, motion_score=動きが多くアク
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 200 }
+          generationConfig: { temperature: 0.1, maxOutputTokens: 400 }
         })
       }
     );
@@ -839,19 +847,28 @@ face_score=子ども・人の顔が鮮明か, motion_score=動きが多くアク
     const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
     const clean = text.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
-    return {
+
+    // 複数クリップをそれぞれ独立したシーンとして返す
+    const clips = (parsed.clips || []).map((c, ci) => ({
+      total: Math.round(c.score || parsed.total || 50),
+      bestMoment: Math.max(0, Math.min(c.start_sec || frameTimes[ci] || 0, dur - (c.duration_sec || 5))),
+      clipDuration: Math.min(c.duration_sec || 5, 8),
+      reason: c.reason || '',
+      index,      // 元動画のインデックス
+      clipIndex: ci,
+      file        // 元ファイルへの参照
+    }));
+
+    return clips.length > 0 ? clips : [{
       total: Math.round(parsed.total || 50),
-      face: parsed.face_score || 0,
-      motion: parsed.motion_score || 0,
-      brightness: parsed.brightness_score || 0,
-      interest: parsed.interest_score || 0,
-      bestMoment: parsed.best_moment_sec || 0,
-      clipDuration: Math.min(parsed.clip_duration_sec || 5, 8),
-      reason: parsed.reason || ''
-    };
+      bestMoment: Math.round(dur * 0.3),
+      clipDuration: 5,
+      reason: '自動抽出',
+      index, clipIndex: 0, file
+    }];
+
   } catch(e) {
     console.warn('Gemini analysis failed for video', index, e.message);
-    // フォールバック：ブラウザで明るさ・動きを簡易推定
     return await localFallbackScore(file, index);
   }
 }
@@ -859,48 +876,58 @@ face_score=子ども・人の顔が鮮明か, motion_score=動きが多くアク
 // Gemini失敗時のローカルフォールバック（Canvas画素解析）
 async function localFallbackScore(file, index) {
   try {
-    const frames = await captureFrames(file, [0.3, 0.6]);
-    let brightness = 50;
-    if (frames.length > 0) {
-      const c = document.createElement('canvas');
-      c.width = 80; c.height = 45;
-      const img = new Image();
-      await new Promise(r => { img.onload = r; img.src = 'data:image/jpeg;base64,' + frames[0]; });
-      c.getContext('2d').drawImage(img, 0, 0, 80, 45);
-      const d = c.getContext('2d').getImageData(0, 0, 80, 45).data;
-      let sum = 0;
-      for (let i = 0; i < d.length; i += 4) sum += (d[i] + d[i+1] + d[i+2]) / 3;
-      brightness = Math.round((sum / (d.length / 4)) / 255 * 100);
+    const v = document.createElement('video');
+    v.src = URL.createObjectURL(file);
+    v.muted = true;
+    await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
+    const dur = v.duration || 10;
+    const numClips = dur >= 30 ? 3 : dur >= 10 ? 2 : 1;
+    const clips = [];
+    for (let i = 0; i < numClips; i++) {
+      const start = dur * (i + 0.3) / numClips;
+      clips.push({
+        total: Math.round(45 + Math.random() * 20),
+        bestMoment: Math.round(start),
+        clipDuration: 5,
+        reason: 'ローカル解析',
+        index, clipIndex: i, file
+      });
     }
-    const total = Math.round(40 + brightness * 0.3 + Math.random() * 15);
-    return { total, face: 15, motion: 15, brightness: Math.round(brightness*0.2), interest: 5, bestMoment: 0, clipDuration: 5, reason: 'ローカル解析' };
+    return clips;
   } catch {
-    return { total: 55, face: 15, motion: 15, brightness: 15, interest: 10, bestMoment: 0, clipDuration: 5, reason: '解析スキップ' };
+    return [{ total: 50, bestMoment: 0, clipDuration: 5, reason: '解析スキップ', index, clipIndex: 0, file }];
   }
 }
 
-// シーン選定：スコア上位の動画から良シーンを抽出
-function selectScenes(sortedScores, targetSec) {
-  if (sortedScores.length === 0) return [];
+// シーン選定：スコア上位クリップを採用、撮影順に並び替え
+function selectScenes(sortedClips, targetSec) {
+  if (sortedClips.length === 0) return [];
 
-  // スコア60点以上を優先、足りなければ下位も追加
-  let candidates = sortedScores.filter(s => s.total >= 60);
-  if (candidates.length === 0) candidates = sortedScores.slice(0, Math.ceil(sortedScores.length / 2));
-  if (candidates.length === 0) candidates = sortedScores;
+  // スコア60点以上を優先。なければ上位半数
+  let candidates = sortedClips.filter(s => s.total >= 60);
+  if (candidates.length === 0) candidates = sortedClips.slice(0, Math.max(1, Math.ceil(sortedClips.length / 2)));
 
-  // 各動画のclipDurationをそのまま使う（Geminiが指定した秒数）
   const selected = [];
   let total = 0;
   for (const s of candidates) {
-    const dur = Math.max(3, Math.min(s.clipDuration || 5, 10)); // 3〜10秒に収める
+    const dur = Math.max(3, Math.min(s.clipDuration || 5, 10));
     selected.push({ ...s, actualDuration: dur });
     total += dur;
-    // targetSecの1.5倍を超えたら打ち切り（余裕を持たせる）
-    if (total >= targetSec * 1.5) break;
+    if (total >= targetSec * 1.2) break; // 72秒を超えたら打ち切り
   }
 
-  // 元の撮影順に並び替え
-  selected.sort((a, b) => a.index - b.index);
+  // 元の撮影順（index → clipIndex）で並び替え
+  selected.sort((a, b) => a.index !== b.index ? a.index - b.index : a.clipIndex - b.clipIndex);
+
+  // 先頭を最高スコアのクリップに入れ替え
+  if (selected.length > 1) {
+    const topIdx = selected.reduce((best, s, i) => s.total > selected[best].total ? i : best, 0);
+    if (topIdx !== 0) {
+      const top = selected.splice(topIdx, 1)[0];
+      selected.unshift(top);
+    }
+  }
+
   return selected;
 }
 
@@ -923,12 +950,12 @@ async function buildCompositeVideo(scenes) {
     ctx.drawImage(video, dx, dy, dw, dh);
   }
 
-  // ── STEP1: 全動画を同時にロード＆シーク（描画ループ中は一切シークしない）──
+  // ── STEP1: 全クリップを同時にロード＆シーク（描画ループ中は一切シークしない）──
   setProgress('analyze-prog-fill', 'analyze-prog-label', 66, '動画をプリロード中...');
 
   const videoEls = await Promise.all(scenes.map(async (scene) => {
     const v = document.createElement('video');
-    v.src = URL.createObjectURL(scene.file);
+    v.src = URL.createObjectURL(scene.file); // clip.fileは元動画ファイル
     v.muted = true;
     v.playsInline = true;
     v.preload = 'auto';
@@ -1020,6 +1047,22 @@ async function buildCompositeVideo(scenes) {
         }, 1000 / FPS);
       });
     }
+
+    // ── 最後: 白へのディゾルブ（1秒） ──
+    const FADE_MS = 1000;
+    const fadeStart = performance.now();
+    await new Promise(r => {
+      const fade = setInterval(() => {
+        const elapsed = performance.now() - fadeStart;
+        const alpha = Math.min(1, elapsed / FADE_MS);
+        // 最後のフレームをそのまま描画してから白をオーバーレイ
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, W, H);
+        ctx.globalAlpha = 1;
+        if (elapsed >= FADE_MS) { clearInterval(fade); r(); }
+      }, 33);
+    });
 
     rec.stop();
   });
