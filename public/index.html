@@ -511,8 +511,24 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
           <button class="btn-ghost" id="copy-btn" onclick="copyLyrics()">📋 歌詞をコピー</button>
           <a href="https://suno.com" target="_blank" class="btn-ghost">🎵 SUNOを開く</a>
         </div>
-        <p class="hint" style="margin-top:10px">
-          SUNOで「Custom」モードを選び、歌詞を貼り付けてBGMを生成してください。<br>
+        <div style="margin-top:14px;padding:14px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;">
+          <div style="font-size:12px;color:var(--gold);font-weight:500;margin-bottom:10px;">✦ Lyria 3 で自動生成（推奨）</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.8;">
+            歌詞からBGMを自動生成します。APIキーは上記と同じものを使用します。
+          </div>
+          <button class="btn btn-gold" id="lyria-btn" onclick="generateLyria()" style="margin-top:0">
+            🎵 Lyria 3 でBGMを自動生成
+          </button>
+          <div class="prog-wrap" id="lyria-prog">
+            <div class="prog-label" id="lyria-prog-label">生成中...</div>
+            <div class="prog-bar"><div class="prog-fill" id="lyria-prog-fill"></div></div>
+          </div>
+          <div class="success-note" id="lyria-success">✓ BGM生成完了！下のステップへ進んでください</div>
+          <div class="err" id="lyria-err"></div>
+        </div>
+        <div style="margin-top:12px;font-size:11px;color:var(--muted);text-align:center;">または</div>
+        <p class="hint" style="margin-top:8px">
+          SUNOで「Custom」モードを選び、歌詞を貼り付けてBGMを手動生成することもできます。<br>
           完成したBGMをMP3でダウンロードして、次のステップへ。
         </p>
       </div>
@@ -984,6 +1000,7 @@ async function buildCompositeVideo(scenes) {
     v.muted = true;
     v.playsInline = true;
     v.preload = 'auto';
+    v.loop = true; // 終端に達しても止まらないようループ設定
     // メタデータ読み込み待ち
     await new Promise(resolve => {
       const t = setTimeout(resolve, 6000);
@@ -1069,7 +1086,9 @@ async function buildCompositeVideo(scenes) {
         } else if (!nextV && elapsed >= clipMs) {
           const fadeElapsed = elapsed - clipMs;
           const alpha = Math.min(1, fadeElapsed / FADE_OUT_MS);
-          // 最終動画は止めずに描画し続ける
+          // loopが有効なので動画は自動的に再生し続ける
+          // paused状態になってしまった場合は強制再生
+          if (v.paused) v.play().catch(() => {});
           drawContain(ctx, v, W, H);
           ctx.globalAlpha = alpha;
           ctx.fillStyle = '#ffffff';
@@ -1114,6 +1133,90 @@ async function buildCompositeVideo(scenes) {
 
 function waitFrame(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// ── Lyria 3 BGM自動生成 ──
+async function generateLyria() {
+  const lyrics = document.getElementById('lyrics-box').value.trim();
+  if (!lyrics) { showErr('lyria-err', '先に歌詞を生成してください'); return; }
+  if (!apiKey)  { showErr('lyria-err', 'APIキーを入力してください'); return; }
+
+  hideErr('lyria-err');
+  document.getElementById('lyria-success').style.display = 'none';
+  const btn = document.getElementById('lyria-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> 生成中（1〜2分かかります）...';
+  document.getElementById('lyria-prog').style.display = 'block';
+  setProgress('lyria-prog-fill', 'lyria-prog-label', 10, 'Lyria 3 に送信中...');
+
+  try {
+    // 歌詞からスタイルタグを抽出してプロンプトを構築
+    const styleMatch = lyrics.match(/\[style:([^\]]+)\]/i);
+    const style = styleMatch ? styleMatch[1].trim() : 'japanese pop, warm, acoustic, gentle vocals';
+    // 歌詞本文（スタイルタグ行を除く）
+    const lyricsBody = lyrics.replace(/\[style:[^\]]+\]
+?/i, '').trim();
+
+    const prompt = `Create a full song with vocals in Japanese. The style is: ${style}.
+Start singing immediately from the first verse with no instrumental intro.
+Use these lyrics exactly:
+
+${lyricsBody}`;
+
+    setProgress('lyria-prog-fill', 'lyria-prog-label', 30, 'BGMを生成中（しばらくお待ちください）...');
+
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/lyria-3-pro-preview:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }]
+        })
+      }
+    );
+
+    if (!res.ok) {
+      const e = await res.json();
+      throw new Error(e.error?.message || 'Lyria API エラー');
+    }
+
+    setProgress('lyria-prog-fill', 'lyria-prog-label', 80, '音声データを処理中...');
+
+    const data = await res.json();
+    const parts = data.candidates?.[0]?.content?.parts || [];
+
+    let audioBase64 = null;
+    for (const part of parts) {
+      if (part.inlineData?.mimeType?.startsWith('audio/')) {
+        audioBase64 = part.inlineData.data;
+      }
+      if (part.text) console.log('Lyria response text:', part.text);
+    }
+
+    if (!audioBase64) throw new Error('音声データが返ってきませんでした');
+
+    // base64 → Blob → ObjectURL → bgmFileとして設定
+    const byteArr = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0));
+    const blob = new Blob([byteArr], { type: 'audio/mp3' });
+    bgmFile = new File([blob], 'lyria_bgm.mp3', { type: 'audio/mp3' });
+
+    document.getElementById('bgm-name').textContent = 'Lyria 3 生成BGM（自動）';
+    document.getElementById('bgm-loaded').style.display = 'block';
+    setProgress('lyria-prog-fill', 'lyria-prog-label', 100, '完了！');
+    document.getElementById('lyria-success').style.display = 'block';
+    checkMergeReady();
+
+    // ステップ5を開いて誘導
+    openStep('step-merge');
+    document.getElementById('step-merge').scrollIntoView({ behavior: 'smooth' });
+
+  } catch(err) {
+    showErr('lyria-err', 'エラー: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '🎵 Lyria 3 でBGMを自動生成';
+  }
 }
 
 // ═══════════════════════════════════════
