@@ -879,27 +879,27 @@ async function localFallbackScore(file, index) {
   }
 }
 
-// シーン選定：全動画から均等に使い、合計target秒にする
+// シーン選定：スコア上位の動画から良シーンを抽出
 function selectScenes(sortedScores, targetSec) {
   if (sortedScores.length === 0) return [];
 
-  // 全動画を使う（本数が少ない場合は全て採用）
-  const maxClips = Math.min(sortedScores.length, 20);
-  const perClip = targetSec / maxClips; // 1本あたりの秒数を均等割り
+  // スコア60点以上を優先、足りなければ下位も追加
+  let candidates = sortedScores.filter(s => s.total >= 60);
+  if (candidates.length === 0) candidates = sortedScores.slice(0, Math.ceil(sortedScores.length / 2));
+  if (candidates.length === 0) candidates = sortedScores;
 
-  const selected = sortedScores.slice(0, maxClips).map(s => ({
-    ...s,
-    actualDuration: Math.max(3, Math.min(perClip, s.clipDuration || perClip))
-  }));
-
-  // 合計をtargetSecに正規化
-  const totalDur = selected.reduce((a, b) => a + b.actualDuration, 0);
-  if (totalDur > 0) {
-    const scale = targetSec / totalDur;
-    selected.forEach(s => { s.actualDuration = Math.max(2, s.actualDuration * scale); });
+  // 各動画のclipDurationをそのまま使う（Geminiが指定した秒数）
+  const selected = [];
+  let total = 0;
+  for (const s of candidates) {
+    const dur = Math.max(3, Math.min(s.clipDuration || 5, 10)); // 3〜10秒に収める
+    selected.push({ ...s, actualDuration: dur });
+    total += dur;
+    // targetSecの1.5倍を超えたら打ち切り（余裕を持たせる）
+    if (total >= targetSec * 1.5) break;
   }
 
-  // 元の動画順に並び替え
+  // 元の撮影順に並び替え
   selected.sort((a, b) => a.index - b.index);
   return selected;
 }
@@ -967,72 +967,66 @@ async function buildCompositeVideo(scenes) {
       const v = videoEls[si];
       const nextV = si + 1 < scenes.length ? videoEls[si + 1] : null;
 
-      // 現在の動画をシーク
-      v.currentTime = scene.bestMoment || 0;
+      // 現在の動画をベストシーンにシーク
+      v.currentTime = Math.max(0, scene.bestMoment || 0);
       await new Promise(r => {
-        const t = setTimeout(r, 3000);
+        const t = setTimeout(r, 4000);
         v.onseeked = () => { clearTimeout(t); r(); };
       });
 
-      // ディゾルブ用に次の動画を事前にシーク・再生開始
+      // 次の動画も事前にシーク（ディゾルブ準備）
       if (nextV) {
-        nextV.currentTime = scenes[si + 1]?.bestMoment || 0;
+        nextV.currentTime = Math.max(0, scenes[si + 1]?.bestMoment || 0);
         await new Promise(r => {
-          const t = setTimeout(r, 3000);
+          const t = setTimeout(r, 4000);
           nextV.onseeked = () => { clearTimeout(t); r(); };
         });
-        nextV.play();
-        nextV.pause(); // 一旦止めてフレームだけ準備
       }
 
-      v.play();
+      // 現在動画を再生
+      await v.play().catch(() => {});
 
-      const clipDuration = scene.actualDuration;
-      const dissolveDuration = 0.5; // 0.5秒のディゾルブ
-      const dissolveStart = clipDuration - dissolveDuration;
-      const startRealTime = performance.now() / 1000;
+      const clipDuration = scene.actualDuration * 1000; // ms
+      const dissolveDuration = 600; // 0.6秒 ms
+      const dissolveStartMs = clipDuration - dissolveDuration;
+      const startTs = performance.now();
+      let nextStarted = false;
 
-      // requestAnimationFrameで実動画に同期して描画
+      // setTimeoutベースの描画ループ（バックグラウンドでも止まらない）
       await new Promise(r => {
-        const draw = () => {
-          const elapsed = performance.now() / 1000 - startRealTime;
+        const INTERVAL = 33; // 約30fps
+        const timer = setInterval(() => {
+          const elapsed = performance.now() - startTs;
 
           if (elapsed >= clipDuration) {
-            // このシーン終了
+            clearInterval(timer);
             v.pause();
+            if (nextV) nextV.pause();
+            setProgress('analyze-prog-fill', 'analyze-prog-label',
+              65 + Math.round(((si + 1) / scenes.length) * 15),
+              `動画を合成中... ${si + 1}/${scenes.length}本目`
+            );
             r();
             return;
           }
 
-          if (elapsed >= dissolveStart && nextV) {
-            // ディゾルブ区間: 次の動画を同じ経過時間だけ進める
-            const alpha = (elapsed - dissolveStart) / dissolveDuration;
-            const clampedAlpha = Math.min(1, Math.max(0, alpha));
-
-            // 次動画のフレームを現在時刻に合わせてシーク
-            const nextOffset = elapsed - dissolveStart;
-            if (nextV.paused) {
-              nextV.currentTime = (scenes[si + 1]?.bestMoment || 0) + nextOffset;
+          if (elapsed >= dissolveStartMs && nextV) {
+            // ディゾルブ開始: 次の動画を再生
+            if (!nextStarted) {
+              nextStarted = true;
+              nextV.play().catch(() => {});
             }
-
+            const alpha = Math.min(1, (elapsed - dissolveStartMs) / dissolveDuration);
             ctx.globalAlpha = 1;
             drawCover(ctx, v, W, H);
-            ctx.globalAlpha = clampedAlpha;
+            ctx.globalAlpha = alpha;
             drawCover(ctx, nextV, W, H);
             ctx.globalAlpha = 1;
           } else {
             drawCover(ctx, v, W, H);
           }
-
-          requestAnimationFrame(draw);
-        };
-        requestAnimationFrame(draw);
+        }, INTERVAL);
       });
-
-      setProgress('analyze-prog-fill', 'analyze-prog-label',
-        65 + Math.round((si / scenes.length) * 15),
-        `動画を合成中... ${si+1}/${scenes.length}本目`
-      );
     }
 
     rec.stop();
