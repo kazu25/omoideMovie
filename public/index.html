@@ -918,25 +918,42 @@ function selectScenes(sortedClips, targetSec) {
   const selected = [];
   let total = 0;
   for (const s of candidates) {
-    const dur = Math.max(3, Math.min(s.clipDuration || 5, 10));
+    const dur = Math.max(2, Math.min(s.clipDuration || 3, 3)); // 2〜3秒に制限
     selected.push({ ...s, actualDuration: dur });
     total += dur;
     if (total >= targetSec * 1.2) break; // 72秒を超えたら打ち切り
   }
 
-  // 元の撮影順（index → clipIndex）で並び替え
+  // 同じ動画(index)から連続するクリップを避けるよう並び替え
+  // まず撮影順に並び替え
   selected.sort((a, b) => a.index !== b.index ? a.index - b.index : a.clipIndex - b.clipIndex);
 
-  // 先頭を最高スコアのクリップに入れ替え
-  if (selected.length > 1) {
-    const topIdx = selected.reduce((best, s, i) => s.total > selected[best].total ? i : best, 0);
+  // 同じindexが連続しないよう間引く
+  const interleaved = [];
+  const used = new Set();
+  let remaining = [...selected];
+  while (remaining.length > 0) {
+    // 直前と異なるindexのクリップを探す
+    const lastIdx = interleaved.length > 0 ? interleaved[interleaved.length - 1].index : -1;
+    const nextIdx = remaining.findIndex(s => s.index !== lastIdx);
+    if (nextIdx === -1) {
+      // 全て同じindexの場合はそのまま追加
+      interleaved.push(...remaining);
+      break;
+    }
+    interleaved.push(remaining.splice(nextIdx, 1)[0]);
+  }
+
+  // 先頭を最高スコアのクリップに入れ替え（同じindexにならない範囲で）
+  if (interleaved.length > 1) {
+    const topIdx = interleaved.reduce((best, s, i) => s.total > interleaved[best].total ? i : best, 0);
     if (topIdx !== 0) {
-      const top = selected.splice(topIdx, 1)[0];
-      selected.unshift(top);
+      const top = interleaved.splice(topIdx, 1)[0];
+      interleaved.unshift(top);
     }
   }
 
-  return selected;
+  return interleaved;
 }
 
 // ブラウザ上でディゾルブ合成
@@ -997,7 +1014,18 @@ async function buildCompositeVideo(scenes) {
   const chunks = [];
   rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
-  // ── STEP3: シーンを順番に描画（シーク一切なし）──
+  // ── STEP3: 全シーン＋ホワイトフェードを単一ループで処理 ──
+  // タイムライン構築（各シーンの開始・終了msを計算）
+  const FADE_OUT_MS = 1200; // 最後の白フェード時間
+  let timeline = [];
+  let cursor = 0;
+  for (let si = 0; si < scenes.length; si++) {
+    const clipMs = Math.max(2000, (scenes[si].actualDuration || 4) * 1000);
+    timeline.push({ si, startMs: cursor, endMs: cursor + clipMs });
+    cursor += clipMs;
+  }
+  const totalMs = cursor + FADE_OUT_MS;
+
   return new Promise(async (resolve) => {
     rec.onstop = () => {
       setProgress('analyze-prog-fill', 'analyze-prog-label', 80, '動画合成完了！歌詞を生成中...');
@@ -1005,77 +1033,79 @@ async function buildCompositeVideo(scenes) {
     };
     rec.start(100);
 
-    for (let si = 0; si < scenes.length; si++) {
-      const scene  = scenes[si];
-      const v      = videoEls[si];
-      const nextV  = si + 1 < scenes.length ? videoEls[si + 1] : null;
+    // 最初のシーンを再生開始
+    await videoEls[0].play().catch(() => {});
+    const globalStart = performance.now();
+    let activeSi = 0;        // 現在描画中のシーンindex
+    let nextStarted = false; // 次シーンの再生開始フラグ
 
-      const clipMs        = Math.max(2000, (scene.actualDuration || 5) * 1000);
-      const dissolveStart = clipMs - DISSOLVE_MS;
+    await new Promise(r => {
+      const loop = setInterval(() => {
+        const now = performance.now() - globalStart;
 
-      // 現在のシーンを再生
-      await v.play().catch(() => {});
-      const startTs  = performance.now();
-      let nextPlayed = false;
+        // ── 現在のシーンを特定 ──
+        const seg = timeline[activeSi];
+        const v    = videoEls[activeSi];
+        const nextSeg = timeline[activeSi + 1];
+        const nextV   = nextSeg ? videoEls[activeSi + 1] : null;
+        const elapsed = now - seg.startMs; // このシーン内の経過ms
+        const clipMs  = seg.endMs - seg.startMs;
+        const dissolveStart = clipMs - DISSOLVE_MS;
 
-      await new Promise(r => {
-        const loop = setInterval(() => {
-          const elapsed = performance.now() - startTs;
-
-          // ── ディゾルブ区間 ──
-          if (elapsed >= dissolveStart && nextV) {
-            if (!nextPlayed) {
-              nextPlayed = true;
-              // 次の動画は既にシーク済み → そのまま再生するだけ
-              nextV.play().catch(() => {});
-            }
-            const alpha = Math.min(1, (elapsed - dissolveStart) / DISSOLVE_MS);
-            ctx.globalAlpha = 1;
-            drawContain(ctx, v, W, H);
-            ctx.globalAlpha = alpha;
-            drawContain(ctx, nextV, W, H);
-            ctx.globalAlpha = 1;
-
-          // ── 通常区間 ──
-          } else {
-            drawContain(ctx, v, W, H);
+        // ── ディゾルブ区間（次シーンがある場合）──
+        if (elapsed >= dissolveStart && nextV) {
+          if (!nextStarted) {
+            nextStarted = true;
+            nextV.play().catch(() => {});
           }
+          const alpha = Math.min(1, (elapsed - dissolveStart) / DISSOLVE_MS);
+          ctx.globalAlpha = 1;
+          drawContain(ctx, v, W, H);
+          ctx.globalAlpha = alpha;
+          drawContain(ctx, nextV, W, H);
+          ctx.globalAlpha = 1;
 
-          // ── シーン終了 ──
-          if (elapsed >= clipMs) {
+        // ── ホワイトフェードアウト区間（最終シーン後）──
+        } else if (!nextV && elapsed >= clipMs) {
+          const fadeElapsed = elapsed - clipMs;
+          const alpha = Math.min(1, fadeElapsed / FADE_OUT_MS);
+          // 最終動画は止めずに描画し続ける
+          drawContain(ctx, v, W, H);
+          ctx.globalAlpha = alpha;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, W, H);
+          ctx.globalAlpha = 1;
+          // フェード完了 → 終了
+          if (fadeElapsed >= FADE_OUT_MS) {
             clearInterval(loop);
-            // 最後のシーンは止めない（フェードアウト中も再生継続）
-            if (si < scenes.length - 1) v.pause();
-            setProgress('analyze-prog-fill', 'analyze-prog-label',
-              66 + Math.round(((si + 1) / scenes.length) * 14),
-              `合成中... ${si + 1} / ${scenes.length} 本目`
-            );
+            v.pause();
             r();
           }
-        }, 1000 / FPS);
-      });
-    }
+          return; // シーン切り替えチェックをスキップ
 
-    // ── 最後: 白へのフェードアウト（1.2秒）再生しながら白く ──
-    const lastV = videoEls[scenes.length - 1];
-    const FADE_MS = 1200;
-    const fadeStart = performance.now();
-    await new Promise(r => {
-      const fade = setInterval(() => {
-        const elapsed = performance.now() - fadeStart;
-        const alpha = Math.min(1, elapsed / FADE_MS);
-        // 動画を再生し続けながら白をオーバーレイ
-        drawContain(ctx, lastV, W, H);
-        ctx.globalAlpha = alpha;
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, W, H);
-        ctx.globalAlpha = 1;
-        if (elapsed >= FADE_MS) {
-          clearInterval(fade);
-          lastV.pause();
+        // ── 通常描画 ──
+        } else {
+          drawContain(ctx, v, W, H);
+        }
+
+        // ── シーン切り替え判定 ──
+        if (elapsed >= clipMs && nextV) {
+          v.pause();
+          activeSi++;
+          nextStarted = false;
+          setProgress('analyze-prog-fill', 'analyze-prog-label',
+            66 + Math.round((activeSi / scenes.length) * 14),
+            `合成中... ${activeSi} / ${scenes.length} 本目`
+          );
+        }
+
+        // 全体タイムアウト保険（totalMsを超えたら強制終了）
+        if (now >= totalMs + 500) {
+          clearInterval(loop);
           r();
         }
-      }, 33);
+
+      }, 1000 / FPS);
     });
 
     rec.stop();
