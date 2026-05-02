@@ -821,7 +821,15 @@ async function analyzeVideoWithGemini(file, index) {
     ...
   ]
 }
-評価基準: 子ども・人の顔が鮮明(重要), 動きが多い, 明るく鮮明, 印象的な瞬間
+【スコアリング基準（100点満点）】
+- 笑顔・楽しそうな表情の子どもや人が映っている: +40点（最重要）
+- 動きが多くアクティブなシーン: +25点
+- 明るく鮮明な映像: +20点
+- 印象的・ユニークな瞬間: +15点
+【減点ルール】
+- 不機嫌・泣いている・怒っている表情が映っている: -40点（必ず低スコアにすること）
+- 暗い・ブレている・ピンぼけ: -20点
+- 人が映っていない: -10点
 各フレームに対応するクリップを提案してください。動画の長さ${Math.round(dur)}秒を超えないようにしてください。` },
       ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
     ];
@@ -1036,8 +1044,8 @@ async function buildCompositeVideo(scenes) {
           // ── シーン終了 ──
           if (elapsed >= clipMs) {
             clearInterval(loop);
-            v.pause();
-            // nextV は次のシーンで引き続き使うので止めない
+            // 最後のシーンは止めない（フェードアウト中も再生継続）
+            if (si < scenes.length - 1) v.pause();
             setProgress('analyze-prog-fill', 'analyze-prog-label',
               66 + Math.round(((si + 1) / scenes.length) * 14),
               `合成中... ${si + 1} / ${scenes.length} 本目`
@@ -1048,19 +1056,25 @@ async function buildCompositeVideo(scenes) {
       });
     }
 
-    // ── 最後: 白へのディゾルブ（1秒） ──
-    const FADE_MS = 1000;
+    // ── 最後: 白へのフェードアウト（1.2秒）再生しながら白く ──
+    const lastV = videoEls[scenes.length - 1];
+    const FADE_MS = 1200;
     const fadeStart = performance.now();
     await new Promise(r => {
       const fade = setInterval(() => {
         const elapsed = performance.now() - fadeStart;
         const alpha = Math.min(1, elapsed / FADE_MS);
-        // 最後のフレームをそのまま描画してから白をオーバーレイ
+        // 動画を再生し続けながら白をオーバーレイ
+        drawContain(ctx, lastV, W, H);
         ctx.globalAlpha = alpha;
         ctx.fillStyle = '#ffffff';
         ctx.fillRect(0, 0, W, H);
         ctx.globalAlpha = 1;
-        if (elapsed >= FADE_MS) { clearInterval(fade); r(); }
+        if (elapsed >= FADE_MS) {
+          clearInterval(fade);
+          lastV.pause();
+          r();
+        }
       }, 33);
     });
 
