@@ -583,9 +583,9 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
 </footer>
 
 <script>
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  STATE
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 let apiKey = '';
 let videoFiles = [];
 let selectedMood = '明るくポップ';
@@ -593,9 +593,9 @@ let resultVideoBlob = null;
 let bgmFile = null;
 let generatedLyrics = '';
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  UI HELPERS
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 function toggleStep(id) {
   const el = document.getElementById(id);
   el.classList.toggle('open');
@@ -632,9 +632,9 @@ function setProgress(fillId, labelId, pct, label) {
   if (labelId) document.getElementById(labelId).textContent = label;
 }
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  STEP 1: API KEY
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 function onApiKeyInput() {
   apiKey = document.getElementById('api-key').value.trim();
   if (apiKey.length > 10) {
@@ -647,9 +647,9 @@ function onApiKeyInput() {
   }
 }
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  STEP 2: UPLOAD
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 function onVideosSelected(e) {
   const files = Array.from(e.target.files).slice(0, 20);
   videoFiles = files;
@@ -685,9 +685,9 @@ function checkAnalyzeReady() {
   btn.disabled = !(apiKey && videoFiles.length > 0);
 }
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  STEP 3: ANALYZE & GENERATE
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 function selectMood(btn) {
   document.querySelectorAll('.mood-btn').forEach(b => b.classList.remove('sel'));
   btn.classList.add('sel');
@@ -991,7 +991,7 @@ async function buildCompositeVideo(scenes) {
     ctx.drawImage(video, dx, dy, dw, dh);
   }
 
-  // ── STEP1: 全クリップを同時にロード＆シーク（描画ループ中は一切シークしない）──
+  // ──────────────────────────────────────── STEP1: 全クリップを同時にロード＆シーク（描画ループ中は一切シークしない）──
   setProgress('analyze-prog-fill', 'analyze-prog-label', 66, '動画をプリロード中...');
 
   const videoEls = await Promise.all(scenes.map(async (scene) => {
@@ -1018,7 +1018,7 @@ async function buildCompositeVideo(scenes) {
     return v;
   }));
 
-  // ── STEP2: キャンバス＆レコーダーを準備 ──
+  // ──────────────────────────────────────── STEP2: キャンバス＆レコーダーを準備 ──
   const W = 1280, H = 720;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
@@ -1031,7 +1031,7 @@ async function buildCompositeVideo(scenes) {
   const chunks = [];
   rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
-  // ── STEP3: 全シーン＋ホワイトフェードを単一ループで処理 ──
+  // ──────────────────────────────────────── STEP3: 全シーン＋ホワイトフェードを単一ループで処理 ──
   // タイムライン構築（各シーンの開始・終了msを計算）
   const FADE_OUT_MS = 1200; // 最後の白フェード時間
   let timeline = [];
@@ -1060,7 +1060,7 @@ async function buildCompositeVideo(scenes) {
       const loop = setInterval(() => {
         const now = performance.now() - globalStart;
 
-        // ── 現在のシーンを特定 ──
+        // ──────────────────────────────────────── 現在のシーンを特定 ──
         const seg = timeline[activeSi];
         const v    = videoEls[activeSi];
         const nextSeg = timeline[activeSi + 1];
@@ -1069,7 +1069,7 @@ async function buildCompositeVideo(scenes) {
         const clipMs  = seg.endMs - seg.startMs;
         const dissolveStart = clipMs - DISSOLVE_MS;
 
-        // ── ディゾルブ区間（次シーンがある場合）──
+        // ──────────────────────────────────────── ディゾルブ区間（次シーンがある場合）──
         if (elapsed >= dissolveStart && nextV) {
           if (!nextStarted) {
             nextStarted = true;
@@ -1082,7 +1082,7 @@ async function buildCompositeVideo(scenes) {
           drawContain(ctx, nextV, W, H);
           ctx.globalAlpha = 1;
 
-        // ── ホワイトフェードアウト区間（最終シーン後）──
+        // ──────────────────────────────────────── ホワイトフェードアウト区間（最終シーン後）──
         } else if (!nextV && elapsed >= clipMs) {
           const fadeElapsed = elapsed - clipMs;
           const alpha = Math.min(1, fadeElapsed / FADE_OUT_MS);
@@ -1102,12 +1102,12 @@ async function buildCompositeVideo(scenes) {
           }
           return; // シーン切り替えチェックをスキップ
 
-        // ── 通常描画 ──
+        // ──────────────────────────────────────── 通常描画 ──
         } else {
           drawContain(ctx, v, W, H);
         }
 
-        // ── シーン切り替え判定 ──
+        // ──────────────────────────────────────── シーン切り替え判定 ──
         if (elapsed >= clipMs && nextV) {
           v.pause();
           activeSi++;
@@ -1135,7 +1135,7 @@ function waitFrame(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// ── Lyria 3 BGM自動生成 ──
+// ──────────────────────────────────────── Lyria 3 BGM自動生成 ──
 async function generateLyria() {
   const lyrics = document.getElementById('lyrics-box').value.trim();
   if (!lyrics) { showErr('lyria-err', '先に歌詞を生成してください'); return; }
@@ -1150,23 +1150,21 @@ async function generateLyria() {
   setProgress('lyria-prog-fill', 'lyria-prog-label', 10, 'Lyria 3 に送信中...');
 
   try {
-    // 歌詞からスタイルタグを抽出してプロンプトを構築
-    const styleMatch = lyrics.match(/\[style:([^\]]+)\]/i);
-    const style = styleMatch ? styleMatch[1].trim() : 'japanese pop, warm, acoustic, gentle vocals';
-    // 歌詞本文（スタイルタグ行を除く）
-    const lyricsBody = lyrics.replace(/\[style:[^\]]+\]
-?/i, '').trim();
+    // スタイルタグ行と歌詞本文を分離
+    const lines = lyrics.split('\n');
+    const styleLine = lines.find(l => l.toLowerCase().includes('[style:'));
+    const styleInner = styleLine
+      ? styleLine.replace(/.*\[style:/i, '').replace(/\].*/, '').trim()
+      : 'japanese pop, warm, acoustic, gentle vocals';
+    const lyricsBody = lines.filter(l => !l.toLowerCase().includes('[style:')).join('\n').trim();
 
-    const prompt = `Create a full song with vocals in Japanese. The style is: ${style}.
-Start singing immediately from the first verse with no instrumental intro.
-Use these lyrics exactly:
-
-${lyricsBody}`;
+    const prompt = 'Create a full song with vocals in Japanese. Style: ' + styleInner + '. ' +
+      'Start singing immediately with no instrumental intro. Use these lyrics exactly:\n\n' + lyricsBody;
 
     setProgress('lyria-prog-fill', 'lyria-prog-label', 30, 'BGMを生成中（しばらくお待ちください）...');
 
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/lyria-3-pro-preview:generateContent?key=${apiKey}`,
+      'https://generativelanguage.googleapis.com/v1beta/models/lyria-3-pro-preview:generateContent?key=' + apiKey,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1188,16 +1186,15 @@ ${lyricsBody}`;
 
     let audioBase64 = null;
     for (const part of parts) {
-      if (part.inlineData?.mimeType?.startsWith('audio/')) {
+      if (part.inlineData && part.inlineData.mimeType && part.inlineData.mimeType.startsWith('audio/')) {
         audioBase64 = part.inlineData.data;
       }
-      if (part.text) console.log('Lyria response text:', part.text);
+      if (part.text) console.log('Lyria:', part.text);
     }
 
     if (!audioBase64) throw new Error('音声データが返ってきませんでした');
 
-    // base64 → Blob → ObjectURL → bgmFileとして設定
-    const byteArr = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0));
+    const byteArr = Uint8Array.from(atob(audioBase64), function(c) { return c.charCodeAt(0); });
     const blob = new Blob([byteArr], { type: 'audio/mp3' });
     bgmFile = new File([blob], 'lyria_bgm.mp3', { type: 'audio/mp3' });
 
@@ -1206,8 +1203,6 @@ ${lyricsBody}`;
     setProgress('lyria-prog-fill', 'lyria-prog-label', 100, '完了！');
     document.getElementById('lyria-success').style.display = 'block';
     checkMergeReady();
-
-    // ステップ5を開いて誘導
     openStep('step-merge');
     document.getElementById('step-merge').scrollIntoView({ behavior: 'smooth' });
 
@@ -1219,9 +1214,9 @@ ${lyricsBody}`;
   }
 }
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  LYRICS GENERATION
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 async function generateLyricsWithGemini(topVideo, selectedScenes, allScores) {
   // 動画フルサイズではなく、各シーンの代表フレームを画像として送る
   const sceneInfo = selectedScenes.map((s, i) => {
@@ -1297,9 +1292,9 @@ ${sceneInfo}
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  STEP 4: LYRICS COPY
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 function copyLyrics() {
   const text = document.getElementById('lyrics-box').value;
   if (!text) return;
@@ -1311,9 +1306,9 @@ function copyLyrics() {
   });
 }
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  STEP 5: BGM MERGE
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 function onBgmSelected(e) {
   bgmFile = e.target.files[0];
   if (!bgmFile) return;
@@ -1451,9 +1446,9 @@ async function startMerge() {
   }
 }
 
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 //  UTILS
-// ═══════════════════════════════════════
+// ────────────────────────────────────────
 function fileToBase64(file) {
   return new Promise((res, rej) => {
     const r = new FileReader();
@@ -1480,7 +1475,7 @@ function bufToWav(buf) {
   return new Blob([ab],{type:'audio/wav'});
 }
 
-// ── Drag & drop ──
+// ──────────────────────────────────────── Drag & drop ──
 function setupDrop(zoneId, handler) {
   const z = document.getElementById(zoneId);
   z.addEventListener('dragover', e => { e.preventDefault(); z.classList.add('over'); });
@@ -1493,7 +1488,7 @@ function setupDrop(zoneId, handler) {
 setupDrop('video-drop', onVideosSelected);
 setupDrop('bgm-drop', onBgmSelected);
 
-// ── Scroll reveal ──
+// ──────────────────────────────────────── Scroll reveal ──
 new IntersectionObserver(entries => {
   entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
 }, { threshold: 0.1 }).observe(document.querySelector('.reveal'));
@@ -1504,7 +1499,7 @@ document.querySelectorAll('.reveal').forEach(el => {
   }, { threshold: 0.08 }).observe(el);
 });
 
-// ── Hero CTA smooth scroll ──
+// ──────────────────────────────────────── Hero CTA smooth scroll ──
 document.querySelector('.hero-cta').addEventListener('click', e => {
   e.preventDefault();
   document.getElementById('app').scrollIntoView({ behavior: 'smooth' });
