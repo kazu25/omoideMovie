@@ -750,6 +750,7 @@ async function startAnalyze() {
 
     // 5. 歌詞生成
     const topVideo = sorted[0].file;
+    window._selectedScenes = selected; // Lyria生成時のタイムスタンプ参照用
     const lyrics = await generateLyricsWithGemini(topVideo, selected, scores);
     generatedLyrics = lyrics;
     document.getElementById('lyrics-box').value = lyrics;
@@ -972,162 +973,168 @@ function selectScenes(sortedClips, targetSec) {
   return interleaved;
 }
 
-// ブラウザ上でディゾルブ合成
+// ブラウザ上でディゾルブ合成（フレーム単位の正確な合成）
 async function buildCompositeVideo(scenes) {
-  const FPS = 30;
-  const DISSOLVE_MS = 700; // ディゾルブ時間 0.7秒
+  const FPS        = 30;
+  const INTERVAL   = Math.round(1000 / FPS); // 33ms
+  const DISSOLVE_S = 0.7;  // ディゾルブ秒数
+  const FADE_OUT_S = 1.5;  // 最後の白フェード秒数
+  const W = 1280, H = 720;
 
-  // アスペクト比を保ってcanvasに描画するヘルパー
-  function drawContain(ctx, video, w, h) {
-    const vw = video.videoWidth  || w;
-    const vh = video.videoHeight || h;
-    const scale = Math.min(w / vw, h / vh);
-    const dw = vw * scale;
-    const dh = vh * scale;
-    const dx = (w - dw) / 2;
-    const dy = (h - dh) / 2;
+  // アスペクト比を保って描画（黒帯あり）
+  function drawContain(ctx, src, w, h) {
+    const sw = src.videoWidth  || src.width  || w;
+    const sh = src.videoHeight || src.height || h;
+    const scale = Math.min(w / sw, h / sh);
+    const dw = sw * scale, dh = sh * scale;
+    const dx = (w - dw) / 2, dy = (h - dh) / 2;
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(video, dx, dy, dw, dh);
+    ctx.drawImage(src, dx, dy, dw, dh);
   }
 
-  // ──────────────────────────────────────── STEP1: 全クリップを同時にロード＆シーク（描画ループ中は一切シークしない）──
+  // --- STEP1: 各シーンの動画要素を生成・シーク ---
   setProgress('analyze-prog-fill', 'analyze-prog-label', 66, '動画をプリロード中...');
-
-  const videoEls = await Promise.all(scenes.map(async (scene) => {
+  const videoEls = [];
+  for (const scene of scenes) {
     const v = document.createElement('video');
-    v.src = URL.createObjectURL(scene.file); // clip.fileは元動画ファイル
+    v.src = URL.createObjectURL(scene.file);
     v.muted = true;
     v.playsInline = true;
     v.preload = 'auto';
-    v.loop = true; // 終端に達しても止まらないようループ設定
-    // メタデータ読み込み待ち
+    v.loop = false; // ループ無効（終端で止まる）
     await new Promise(resolve => {
       const t = setTimeout(resolve, 6000);
       v.onloadedmetadata = () => { clearTimeout(t); resolve(); };
-      v.onerror = () => { clearTimeout(t); resolve(); };
+      v.onerror        = () => { clearTimeout(t); resolve(); };
       v.load();
     });
-    // ベストシーンにシーク
-    const seekTo = Math.max(0, Math.min(scene.bestMoment || 0, (v.duration || 999) - (scene.actualDuration || 5) - 0.1));
+    // bestMomentにシーク（動画の長さを超えないよう制限）
+    const seekTo = Math.max(0, Math.min(
+      scene.bestMoment || 0,
+      Math.max(0, (v.duration || 10) - (scene.actualDuration || 3) - 0.2)
+    ));
     v.currentTime = seekTo;
     await new Promise(resolve => {
       const t = setTimeout(resolve, 5000);
       v.onseeked = () => { clearTimeout(t); resolve(); };
     });
-    return v;
-  }));
+    videoEls.push(v);
+  }
 
-  // ──────────────────────────────────────── STEP2: キャンバス＆レコーダーを準備 ──
-  const W = 1280, H = 720;
+  // --- STEP2: Canvas・Recorder準備 ---
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
-  const stream = canvas.captureStream(FPS);
   const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
     ? 'video/webm;codecs=vp9' : 'video/webm';
-  const rec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 5000000 });
-  const chunks = [];
+  const stream  = canvas.captureStream(FPS);
+  const rec     = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 5000000 });
+  const chunks  = [];
   rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
-  // ──────────────────────────────────────── STEP3: 全シーン＋ホワイトフェードを単一ループで処理 ──
-  // タイムライン構築（各シーンの開始・終了msを計算）
-  const FADE_OUT_MS = 1200; // 最後の白フェード時間
-  let timeline = [];
-  let cursor = 0;
-  for (let si = 0; si < scenes.length; si++) {
-    const clipMs = Math.max(2000, (scenes[si].actualDuration || 4) * 1000);
-    timeline.push({ si, startMs: cursor, endMs: cursor + clipMs });
-    cursor += clipMs;
-  }
-  const totalMs = cursor + FADE_OUT_MS;
-
-  return new Promise(async (resolve) => {
+  // --- STEP3: シーンを順番に描画 ---
+  return new Promise(async resolve => {
     rec.onstop = () => {
       setProgress('analyze-prog-fill', 'analyze-prog-label', 80, '動画合成完了！歌詞を生成中...');
       resolve(new Blob(chunks, { type: 'video/webm' }));
     };
-    rec.start(100);
+    rec.start(INTERVAL);
 
-    // 最初のシーンを再生開始
-    await videoEls[0].play().catch(() => {});
-    const globalStart = performance.now();
-    let activeSi = 0;        // 現在描画中のシーンindex
-    let nextStarted = false; // 次シーンの再生開始フラグ
+    for (let si = 0; si < scenes.length; si++) {
+      const scene     = scenes[si];
+      const v         = videoEls[si];
+      const nextV     = si + 1 < scenes.length ? videoEls[si + 1] : null;
+      const clipMs    = Math.max(2000, (scene.actualDuration || 3) * 1000);
+      const dissolveStartMs = clipMs - DISSOLVE_S * 1000;
 
-    await new Promise(r => {
-      const loop = setInterval(() => {
-        const now = performance.now() - globalStart;
+      // 現シーンを再生（既にシーク済み）
+      await v.play().catch(() => {});
 
-        // ──────────────────────────────────────── 現在のシーンを特定 ──
-        const seg = timeline[activeSi];
-        const v    = videoEls[activeSi];
-        const nextSeg = timeline[activeSi + 1];
-        const nextV   = nextSeg ? videoEls[activeSi + 1] : null;
-        const elapsed = now - seg.startMs; // このシーン内の経過ms
-        const clipMs  = seg.endMs - seg.startMs;
-        const dissolveStart = clipMs - DISSOLVE_MS;
+      // 次シーンを事前に再生しておく（ミュートなので音なし）
+      // ディゾルブ用フレームを確保するため少し早めにplay
+      if (nextV) {
+        // nextVはシーク済みなのでplay/pauseだけ
+        await nextV.play().catch(() => {});
+        nextV.pause(); // すぐ止める（フレームだけ確保）
+      }
 
-        // ──────────────────────────────────────── ディゾルブ区間（次シーンがある場合）──
-        if (elapsed >= dissolveStart && nextV) {
-          if (!nextStarted) {
-            nextStarted = true;
-            nextV.play().catch(() => {});
+      const startTs = performance.now();
+      let dissolveStarted = false;
+
+      await new Promise(r => {
+        const loop = setInterval(() => {
+          const elapsed = performance.now() - startTs;
+
+          if (elapsed >= dissolveStartMs && nextV) {
+            // ---- ディゾルブ区間 ----
+            if (!dissolveStarted) {
+              dissolveStarted = true;
+              // 次シーンを再生開始
+              nextV.play().catch(() => {});
+            }
+            const alpha = Math.min(1, (elapsed - dissolveStartMs) / (DISSOLVE_S * 1000));
+            ctx.globalAlpha = 1;
+            drawContain(ctx, v, W, H);
+            ctx.globalAlpha = alpha;
+            drawContain(ctx, nextV, W, H);
+            ctx.globalAlpha = 1;
+          } else {
+            // ---- 通常描画 ----
+            // 動画が終端に達した場合（ended）は最終フレームを維持
+            drawContain(ctx, v, W, H);
           }
-          const alpha = Math.min(1, (elapsed - dissolveStart) / DISSOLVE_MS);
-          ctx.globalAlpha = 1;
-          drawContain(ctx, v, W, H);
-          ctx.globalAlpha = alpha;
-          drawContain(ctx, nextV, W, H);
-          ctx.globalAlpha = 1;
 
-        // ──────────────────────────────────────── ホワイトフェードアウト区間（最終シーン後）──
-        } else if (!nextV && elapsed >= clipMs) {
-          const fadeElapsed = elapsed - clipMs;
-          const alpha = Math.min(1, fadeElapsed / FADE_OUT_MS);
-          // loopが有効なので動画は自動的に再生し続ける
-          // paused状態になってしまった場合は強制再生
-          if (v.paused) v.play().catch(() => {});
-          drawContain(ctx, v, W, H);
-          ctx.globalAlpha = alpha;
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, W, H);
-          ctx.globalAlpha = 1;
-          // フェード完了 → 終了
-          if (fadeElapsed >= FADE_OUT_MS) {
+          // シーン終了判定
+          if (elapsed >= clipMs) {
             clearInterval(loop);
             v.pause();
+            setProgress('analyze-prog-fill', 'analyze-prog-label',
+              66 + Math.round(((si + 1) / scenes.length) * 13),
+              `合成中... ${si + 1} / ${scenes.length} 本目`
+            );
             r();
           }
-          return; // シーン切り替えチェックをスキップ
+        }, INTERVAL);
+      });
+    }
 
-        // ──────────────────────────────────────── 通常描画 ──
-        } else {
-          drawContain(ctx, v, W, H);
-        }
+    // --- STEP4: ホワイトフェードアウト（最終動画を再生し続けながら）---
+    const lastV = videoEls[scenes.length - 1];
+    // 最終シーンの末尾付近を再生（ループなし・ended後は静止）
+    // 既に再生中のはずだが念のため
+    if (lastV.paused && !lastV.ended) lastV.play().catch(() => {});
 
-        // ──────────────────────────────────────── シーン切り替え判定 ──
-        if (elapsed >= clipMs && nextV) {
-          v.pause();
-          activeSi++;
-          nextStarted = false;
-          setProgress('analyze-prog-fill', 'analyze-prog-label',
-            66 + Math.round((activeSi / scenes.length) * 14),
-            `合成中... ${activeSi} / ${scenes.length} 本目`
-          );
-        }
+    const fadeMs   = FADE_OUT_S * 1000;
+    const fadeStart = performance.now();
 
-        // 全体タイムアウト保険（totalMsを超えたら強制終了）
-        if (now >= totalMs + 500) {
-          clearInterval(loop);
+    await new Promise(r => {
+      const fadeTick = setInterval(() => {
+        const elapsed = performance.now() - fadeStart;
+        const alpha   = Math.min(1, elapsed / fadeMs);
+
+        // 動画が終端に達した場合も最終フレームが描画される（ended状態でも drawImage は最終フレームを返す）
+        drawContain(ctx, lastV, W, H);
+
+        // 白をオーバーレイ
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle   = '#ffffff';
+        ctx.fillRect(0, 0, W, H);
+        ctx.globalAlpha = 1;
+
+        if (elapsed >= fadeMs) {
+          // 完全白フレームを数フレーム書き込んで終了
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, W, H);
+          clearInterval(fadeTick);
+          lastV.pause();
+          // 少し待ってからrecorder停止（バッファをフラッシュ）
+          setTimeout(() => rec.stop(), 300);
           r();
         }
-
-      }, 1000 / FPS);
+      }, INTERVAL);
     });
-
-    rec.stop();
   });
 }
 
@@ -1158,8 +1165,24 @@ async function generateLyria() {
       : 'japanese pop, warm, acoustic, gentle vocals';
     const lyricsBody = lines.filter(l => !l.toLowerCase().includes('[style:')).join('\n').trim();
 
-    const prompt = 'Create a full song with vocals in Japanese. Style: ' + styleInner + '. ' +
-      'Start singing immediately with no instrumental intro. Use these lyrics exactly:\n\n' + lyricsBody;
+    // タイムスタンプ情報を追加（シーン構成が保存されていれば）
+    const scenes = window._selectedScenes || [];
+    let timelineInfo = '';
+    if (scenes.length > 0) {
+      let t = 0;
+      timelineInfo = '\n\nVideo timeline (please match vocal timing to these timestamps):\n';
+      scenes.forEach((s, i) => {
+        timelineInfo += '- ' + t.toFixed(1) + 's-' + (t + s.actualDuration).toFixed(1) + 's: ' + (s.reason || 'Scene ' + (i+1)) + '\n';
+        t += s.actualDuration;
+      });
+      timelineInfo += 'Total: ' + t.toFixed(1) + 's';
+    }
+
+    const prompt = 'Create a Japanese vocal song. Style: ' + styleInner + '. ' +
+      'IMPORTANT: Start singing immediately from the very first beat with NO instrumental intro whatsoever. ' +
+      'Match the vocal phrases to the video timestamps below.' +
+      timelineInfo +
+      '\n\nUse these lyrics:\n' + lyricsBody;
 
     setProgress('lyria-prog-fill', 'lyria-prog-label', 30, 'BGMを生成中（しばらくお待ちください）...');
 
