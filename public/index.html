@@ -1165,9 +1165,7 @@ async function buildCompositeVideo(scenes) {
   // vp8はブラウザのソフトウェアエンコードで品質が安定する
   const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
     ? 'video/webm;codecs=vp8' : 'video/webm';
-  // captureStream(0)で描画タイミングに合わせて自動キャプチャ
-  // → setIntervalとの同期ズレによるフレームドロップを防ぐ
-  const stream  = canvas.captureStream(0);
+  const stream  = canvas.captureStream(30);
   const rec     = new MediaRecorder(stream, {
     mimeType: mime,
     videoBitsPerSecond: targetBitrate
@@ -1234,9 +1232,6 @@ async function buildCompositeVideo(scenes) {
             // ---- 通常描画 ----
             drawScene(v);
           }
-
-          // captureStream(0)の場合、明示的にフレームをキャプチャ
-          if (stream.requestFrame) stream.requestFrame();
 
           // シーン終了
           if (elapsed >= clipMs) {
@@ -1504,14 +1499,16 @@ async function generateMiniMax() {
       'authentic Japanese pop production like Hikaru Utada or Yoasobi style, ' +
       'Japanese female or male vocalist, ' +
       'professional J-pop studio quality, warm emotional, ' +
-      'no instrumental intro whatsoever, singer starts immediately on beat 1, ' +
-      'instant vocal entry, no prelude';
+      'IMPORTANT: absolutely no instrumental intro, no prelude, no musical intro section, ' +
+      'vocals must begin on the very first beat of the song, ' +
+      'start singing immediately with the first lyric line';
 
-    // 歌詞の先頭に空の[intro]タグを追加してイントロを最小化
-    // [verse]等の最初のタグの前に[intro]を1行挿入
-    if (!lyricsForMinimax.toLowerCase().startsWith('[intro]')) {
-      lyricsForMinimax = '[intro]\n' + lyricsForMinimax;
-    }
+    // [intro]タグがあれば削除（MiniMaxはintroタグでインストゥルメンタルイントロを生成するため）
+    lyricsForMinimax = lyricsForMinimax
+      .split('\n')
+      .filter(l => l.trim().toLowerCase() !== '[intro]')
+      .join('\n')
+      .trim();
 
     setProgress('minimax-prog-fill', 'minimax-prog-label', 25, 'BGMを生成中...');
 
@@ -1717,7 +1714,7 @@ async function startMerge() {
     asSrc.connect(dest);
 
     const combined = new MediaStream([
-      ...canvas.captureStream(0).getVideoTracks(),  // 描画タイミングに合わせてキャプチャ
+      ...canvas.captureStream(30).getVideoTracks(),
       ...dest.stream.getAudioTracks()
     ]);
 
@@ -1765,8 +1762,6 @@ async function startMerge() {
         // 動画フレームをcanvasに描画
         if (videoEl.readyState >= 2) {
           ctx2d.drawImage(videoEl, 0, 0, vw, vh);
-          // captureStream(0)の場合、明示的にフレームをキャプチャ
-          if (combined.requestFrame) combined.requestFrame();
         }
         const elapsed = (performance.now() - startTs) / 1000;
         const pct = 60 + Math.min((elapsed / duration) * 38, 38);
