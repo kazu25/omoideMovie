@@ -340,6 +340,20 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
 </head>
 <body>
 
+<!-- 処理中警告バナー（固定表示） -->
+<div id="processing-banner" style="
+  display:none;
+  position:fixed;top:0;left:0;right:0;z-index:9999;
+  background:linear-gradient(135deg,#c9a84c,#a07830);
+  color:#1a1205;padding:10px 20px;
+  text-align:center;font-size:13px;font-weight:500;
+  font-family:'Zen Kaku Gothic New',sans-serif;
+  box-shadow:0 2px 12px rgba(0,0,0,0.4);
+  letter-spacing:0.03em;line-height:1.6;
+">
+  ⏳ 処理中です — 画面を閉じたりアプリを切り替えたりしないでください
+</div>
+
 <!-- HERO -->
 <section class="hero" id="top">
   <div class="hero-bg"></div><div class="grain"></div>
@@ -724,6 +738,7 @@ async function startAnalyze() {
   const btn = document.getElementById('analyze-btn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> 分析中...';
+  document.getElementById('processing-banner').style.display = 'block';
 
   const progWrap = document.getElementById('analyze-prog');
   progWrap.style.display = 'block';
@@ -782,6 +797,7 @@ async function startAnalyze() {
 
     setProgress('analyze-prog-fill', 'analyze-prog-label', 100, '完了！');
 
+    document.getElementById('processing-banner').style.display = 'none';
     markDone('step-analyze', '✓ 完了');
     markDone('step-lyrics', '✓ 生成済み');
     openStep('step-lyrics');
@@ -795,6 +811,7 @@ async function startAnalyze() {
     btn.innerHTML = '✦ 再生成する';
 
   } catch(err) {
+    document.getElementById('processing-banner').style.display = 'none';
     showErr('analyze-err', 'エラー: ' + err.message);
     btn.disabled = false;
     btn.innerHTML = '✦ AIでシーン分析・動画生成を開始';
@@ -1340,34 +1357,43 @@ async function generateLyricsWithGemini(topVideo, selectedScenes, allScores) {
     }
   }
 
-  const prompt = `以下のシーン構成と画像（各シーンの代表フレーム）をもとに、SUNO AI用の歌詞を作ってください。
+  // シーンの「reason」を詳細な説明文に変換
+  const sceneDescriptions = selectedScenes.map((s, i) => {
+    const sec = selectedScenes.slice(0, i).reduce((a, b) => a + b.actualDuration, 0);
+    return `シーン${i+1}（${Math.round(sec)}〜${Math.round(sec + s.actualDuration)}秒）: ${s.reason || '家族のひとこま'}`;
+  }).join('\n');
 
-シーン構成:
-${sceneInfo}
+  const prompt = `あなたはJ-POPの作詞家です。以下の家族動画のシーンを見て、その内容を具体的に反映した歌詞を書いてください。
 
-以下の形式で出力してください:
+【動画のシーン詳細】
+${sceneDescriptions}
 
-[スタイルタグ]
-[style: japanese pop, warm, acoustic, gentle vocals]
+【重要な指示】
+1. 各シーンで実際に起きていること（場所・行動・表情）を歌詞に具体的に盛り込むこと
+2. 例えば「公園で走り回る子ども」ならそのシーンが目に浮かぶような言葉を使う
+3. 汎用的な「思い出」「大切な日」などの抽象表現だけにしない
+4. 画像を見て、映っているものを直接描写する（食べ物・乗り物・季節感など）
 
-[Verse 1]（0〜20秒）
-歌詞
+【出力形式（必ずこの通りに）】
+[style: J-pop, Japanese pop, ${selectedMood === '明るくポップ' ? 'upbeat, bright, energetic' : selectedMood === '穏やか・温かい' ? 'mellow, warm, gentle acoustic' : selectedMood === '感動的・しみじみ' ? 'emotional, cinematic, piano ballad' : selectedMood === '賑やか・元気' ? 'fun, lively, cheerful' : selectedMood === '夏・爽やか' ? 'summer, breezy, fresh' : 'nostalgic, retro, heartfelt'}, female vocals, studio quality]
 
-[Chorus]（20〜40秒）
-歌詞
+[Verse 1]
+（シーン1〜2の内容を具体的に描写した歌詞・4行）
 
-[Verse 2]（40〜55秒）
-歌詞
+[Chorus]
+（この動画全体のハイライト・感情のピーク・4行）
 
-[Outro]（55〜60秒）
-歌詞
+[Verse 2]
+（シーン3〜4の内容を具体的に描写した歌詞・4行）
 
-条件:
-- 雰囲気: ${selectedMood}
-- 日本語の歌詞
-- 家族・子ども・思い出がテーマ
+[Outro]
+（締めくくり・余韻・2行）
+
+【歌詞の制約】
 - 1行12〜16文字
-- スタイルタグは英語で3〜5個`;
+- 日本語のみ
+- J-POPらしい自然なリズム感（7・5調や8・8調など）
+- 「思い出」「大切な君」などの使い古した表現は避ける`;
 
   const res = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
@@ -1431,11 +1457,18 @@ async function generateMiniMax() {
       .replace(/\[Intro\]/gi, '[intro]')
       .trim();
 
-    // プロンプト：日本語家族動画向けに最適化（イントロなし厳命）
-    const prompt = styleInner + ', Japanese vocals, emotional family memory, ' +
-      'professional studio quality, warm and touching, ' +
-      'no instrumental intro, vocalist sings from the very first second, ' +
-      'immediate vocal entry on beat 1';
+    // プロンプト：J-POP特化・イントロなし厳命
+    // styleInnerからアジア系の指定を除いてJ-POP色を強化
+    const jpopEnhanced = styleInner
+      .replace(/k-?pop/gi, 'J-pop')
+      .replace(/c-?pop/gi, 'J-pop')
+      .replace(/mandopop/gi, 'J-pop');
+    const prompt = 'J-pop, Japanese pop music style, ' + jpopEnhanced + ', ' +
+      'authentic Japanese pop production like Hikaru Utada or Yoasobi style, ' +
+      'Japanese female or male vocalist, ' +
+      'professional J-pop studio quality, warm emotional, ' +
+      'no instrumental intro whatsoever, singer starts immediately on beat 1, ' +
+      'instant vocal entry, no prelude';
 
     // 歌詞の先頭に空の[intro]タグを追加してイントロを最小化
     // [verse]等の最初のタグの前に[intro]を1行挿入
@@ -1550,6 +1583,7 @@ async function startMerge() {
   const btn = document.getElementById('merge-btn');
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner"></div> 合成中...';
+  document.getElementById('processing-banner').style.display = 'block';
 
   const progWrap = document.getElementById('merge-prog');
   progWrap.style.display = 'block';
@@ -1662,6 +1696,7 @@ async function startMerge() {
       document.getElementById('dl-link').href = dlUrl;
       document.getElementById('dl-wrap').style.display = 'block';
       document.getElementById('merge-prog').style.display = 'none';
+      document.getElementById('processing-banner').style.display = 'none';
       markDone('step-merge', '✓ 完成');
       setStatus('merge-status', '✓ 完成', 'ok');
       btn.disabled = false;
@@ -1699,6 +1734,7 @@ async function startMerge() {
     });
 
   } catch(err) {
+    document.getElementById('processing-banner').style.display = 'none';
     showErr('merge-err', 'エラー: ' + err.message);
     btn.disabled = false;
     btn.innerHTML = '🎬 動画にBGMを合成する';
