@@ -991,28 +991,48 @@ function selectScenes(sortedClips, targetSec) {
   }
 
   if (selected.length === 0) {
-    // フォールバック：スコア上位1件だけ採用
     const top = sortedClips[0];
     return [{ ...top, actualDuration: 3 }];
   }
 
-  // 撮影順（index昇順 → bestMoment昇順）に並び替え
+  // ── 並び替え：同一動画が連続しないよう交互配置 ──
+  // まず撮影順に並べる
   selected.sort((a, b) =>
     a.index !== b.index ? a.index - b.index : a.bestMoment - b.bestMoment
   );
 
-  // 先頭を最高スコアのクリップに入れ替え
-  if (selected.length > 1) {
-    const topIdx = selected.reduce((best, s, i) =>
-      s.total > selected[best].total ? i : best, 0
+  // 同一indexが連続しないようにインターリーブ
+  const interleaved = [];
+  const remaining = [...selected];
+  while (remaining.length > 0) {
+    const lastIdx = interleaved.length > 0 ? interleaved[interleaved.length - 1].index : -1;
+    // 直前と異なるindexを探す
+    let nextPos = remaining.findIndex(s => s.index !== lastIdx);
+    if (nextPos === -1) nextPos = 0; // 全部同じindexなら先頭から
+    interleaved.push(remaining.splice(nextPos, 1)[0]);
+  }
+
+  // 先頭を最高スコアのクリップに（ただし先頭と同じindexが2番目に来ないよう確認）
+  if (interleaved.length > 1) {
+    const topIdx = interleaved.reduce((best, s, i) =>
+      s.total > interleaved[best].total ? i : best, 0
     );
     if (topIdx !== 0) {
-      const top = selected.splice(topIdx, 1)[0];
-      selected.unshift(top);
+      const top = interleaved.splice(topIdx, 1)[0];
+      // 先頭に入れた後、2番目が同じindexなら3番目以降から別indexを探して入れ替え
+      interleaved.unshift(top);
+      if (interleaved.length > 1 && interleaved[1].index === top.index) {
+        const swapPos = interleaved.findIndex((s, i) => i > 1 && s.index !== top.index);
+        if (swapPos !== -1) {
+          const tmp = interleaved[1];
+          interleaved[1] = interleaved[swapPos];
+          interleaved[swapPos] = tmp;
+        }
+      }
     }
   }
 
-  return selected;
+  return interleaved;
 }
 
 // ブラウザ上でディゾルブ合成（白フレーム末尾方式）
@@ -1020,7 +1040,6 @@ async function buildCompositeVideo(scenes) {
   const FPS        = 30;
   const INTERVAL   = Math.round(1000 / FPS); // 33ms
   const DISSOLVE_S = 0.7;  // ディゾルブ秒数
-  const W = 1280, H = 720;
 
   // 末尾に白フレーム用ダミーシーンを2つ追加してディゾルブで白へ
   const allScenes = [
@@ -1028,18 +1047,6 @@ async function buildCompositeVideo(scenes) {
     { actualDuration: 0.8, isWhite: true },
     { actualDuration: 0.8, isWhite: true }
   ];
-
-  // アスペクト比を保って描画（黒帯あり）
-  function drawContain(ctx, src, w, h) {
-    const sw = src.videoWidth  || src.width  || w;
-    const sh = src.videoHeight || src.height || h;
-    const scale = Math.min(w / sw, h / sh);
-    const dw = sw * scale, dh = sh * scale;
-    const dx = (w - dw) / 2, dy = (h - dh) / 2;
-    ctx.fillStyle = '#000';
-    ctx.fillRect(0, 0, w, h);
-    ctx.drawImage(src, dx, dy, dw, dh);
-  }
 
   // --- STEP1: 各シーンの動画要素を生成・シーク（白シーンはnull）---
   setProgress('analyze-prog-fill', 'analyze-prog-label', 66, '動画をプリロード中...');
@@ -1070,7 +1077,41 @@ async function buildCompositeVideo(scenes) {
     videoEls.push(v);
   }
 
-  // --- STEP2: Canvas・Recorder準備 ---
+  // --- STEP2: キャンバスサイズを元動画から動的に決定 ---
+  // 最初の実動画要素からサイズを取得
+  const firstVideoEl = videoEls.find(v => v !== null);
+  let W, H;
+  if (firstVideoEl && firstVideoEl.videoWidth > 0 && firstVideoEl.videoHeight > 0) {
+    W = firstVideoEl.videoWidth;
+    H = firstVideoEl.videoHeight;
+  } else {
+    // フォールバック：元ファイルリストの最初の動画から取得
+    const fallbackV = document.createElement('video');
+    fallbackV.src = URL.createObjectURL(scenes[0].file);
+    fallbackV.muted = true;
+    await new Promise(r => {
+      fallbackV.onloadedmetadata = r;
+      setTimeout(r, 3000);
+      fallbackV.load();
+    });
+    await fallbackV.play().catch(() => {});
+    fallbackV.pause();
+    W = fallbackV.videoWidth  || 1080;
+    H = fallbackV.videoHeight || 1920;
+  }
+
+  // アスペクト比を保って描画（黒帯あり）
+  function drawContain(ctx, src, w, h) {
+    const sw = src.videoWidth  || src.width  || w;
+    const sh = src.videoHeight || src.height || h;
+    const scale = Math.min(w / sw, h / sh);
+    const dw = sw * scale, dh = sh * scale;
+    const dx = (w - dw) / 2, dy = (h - dh) / 2;
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(src, dx, dy, dw, dh);
+  }
+
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
@@ -1393,7 +1434,8 @@ async function generateMiniMax() {
     // プロンプト：日本語家族動画向けに最適化（イントロなし厳命）
     const prompt = styleInner + ', Japanese vocals, emotional family memory, ' +
       'professional studio quality, warm and touching, ' +
-      'NO intro, NO instrumental opening, vocals start on beat 1 immediately';
+      'no instrumental intro, vocalist sings from the very first second, ' +
+      'immediate vocal entry on beat 1';
 
     // 歌詞の先頭に空の[intro]タグを追加してイントロを最小化
     // [verse]等の最初のタグの前に[intro]を1行挿入
@@ -1559,18 +1601,34 @@ async function startMerge() {
 
     setProgress('merge-prog-fill', 'merge-prog-label', 60, '動画と合成中...');
 
-    // 動画のサイズを確実に取得（videoWidthはplay後に確定するため先にロード）
+    // 動画のサイズを確実に取得（play後にvideoWidth/Heightが確定する）
     videoEl.style.display = 'none';
     document.body.appendChild(videoEl);
 
-    // 動画を一度再生してサイズを確定させる
     await videoEl.play().catch(() => {});
     videoEl.pause();
     videoEl.currentTime = 0;
     await new Promise(r => { videoEl.onseeked = r; setTimeout(r, 2000); });
 
-    const vw = videoEl.videoWidth  || 1280;
-    const vh = videoEl.videoHeight || 720;
+    // videoWidth/Height が0の場合は元のアップロード動画から取得
+    let vw = videoEl.videoWidth;
+    let vh = videoEl.videoHeight;
+    if (!vw || !vh) {
+      // 元動画ファイルが残っていればそちらから取得
+      const srcFile = videoFiles && videoFiles[0];
+      if (srcFile) {
+        const tmpV = document.createElement('video');
+        tmpV.src = URL.createObjectURL(srcFile);
+        tmpV.muted = true;
+        await new Promise(r => { tmpV.onloadedmetadata = r; setTimeout(r, 3000); tmpV.load(); });
+        await tmpV.play().catch(() => {});
+        tmpV.pause();
+        vw = tmpV.videoWidth  || 1080;
+        vh = tmpV.videoHeight || 1920;
+      } else {
+        vw = 1080; vh = 1920; // 縦動画をデフォルトに
+      }
+    }
 
     const audioEl = document.createElement('audio');
     audioEl.src = URL.createObjectURL(wavBlob);
