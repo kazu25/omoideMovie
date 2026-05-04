@@ -1153,10 +1153,25 @@ async function buildCompositeVideo(scenes) {
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
-  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-    ? 'video/webm;codecs=vp9' : 'video/webm';
-  const stream  = canvas.captureStream(FPS);
-  const rec     = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 5000000 });
+  // 解像度に応じてビットレートを動的に設定
+  // 縦動画(1080x1920)は横動画(1920x1080)より高ビットレートが必要
+  const pixels = W * H;
+  const targetBitrate = pixels >= 1920 * 1080
+    ? 12000000  // FHD以上: 12Mbps
+    : pixels >= 1280 * 720
+    ? 8000000   // HD: 8Mbps
+    : 6000000;  // それ以下: 6Mbps
+
+  // vp8はブラウザのソフトウェアエンコードで品質が安定する
+  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
+    ? 'video/webm;codecs=vp8' : 'video/webm';
+  // captureStream(0)で描画タイミングに合わせて自動キャプチャ
+  // → setIntervalとの同期ズレによるフレームドロップを防ぐ
+  const stream  = canvas.captureStream(0);
+  const rec     = new MediaRecorder(stream, {
+    mimeType: mime,
+    videoBitsPerSecond: targetBitrate
+  });
   const chunks  = [];
   rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
@@ -1219,6 +1234,9 @@ async function buildCompositeVideo(scenes) {
             // ---- 通常描画 ----
             drawScene(v);
           }
+
+          // captureStream(0)の場合、明示的にフレームをキャプチャ
+          if (stream.requestFrame) stream.requestFrame();
 
           // シーン終了
           if (elapsed >= clipMs) {
@@ -1699,13 +1717,23 @@ async function startMerge() {
     asSrc.connect(dest);
 
     const combined = new MediaStream([
-      ...canvas.captureStream(30).getVideoTracks(),
+      ...canvas.captureStream(0).getVideoTracks(),  // 描画タイミングに合わせてキャプチャ
       ...dest.stream.getAudioTracks()
     ]);
 
-    const mime2 = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-      ? 'video/webm;codecs=vp9,opus' : 'video/webm';
-    const rec = new MediaRecorder(combined, { mimeType: mime2, videoBitsPerSecond: 5000000 });
+    // 解像度に応じてビットレートを動的設定
+    const pixels2 = vw * vh;
+    const targetBitrate2 = pixels2 >= 1920 * 1080
+      ? 12000000 : pixels2 >= 1280 * 720 ? 8000000 : 6000000;
+
+    // vp8+opusで安定した品質を確保
+    const mime2 = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
+      ? 'video/webm;codecs=vp8,opus' : 'video/webm';
+    const rec = new MediaRecorder(combined, {
+      mimeType: mime2,
+      videoBitsPerSecond: targetBitrate2,
+      audioBitsPerSecond: 192000
+    });
     const chunks = [];
     rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
@@ -1737,6 +1765,8 @@ async function startMerge() {
         // 動画フレームをcanvasに描画
         if (videoEl.readyState >= 2) {
           ctx2d.drawImage(videoEl, 0, 0, vw, vh);
+          // captureStream(0)の場合、明示的にフレームをキャプチャ
+          if (combined.requestFrame) combined.requestFrame();
         }
         const elapsed = (performance.now() - startTs) / 1000;
         const pct = 60 + Math.min((elapsed / duration) * 38, 38);
