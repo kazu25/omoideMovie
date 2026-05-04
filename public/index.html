@@ -531,7 +531,19 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
             <div class="prog-label" id="minimax-prog-label">生成中（30秒〜2分かかります）...</div>
             <div class="prog-bar"><div class="prog-fill" id="minimax-prog-fill"></div></div>
           </div>
-          <div class="success-note" id="minimax-success">✓ BGM生成完了！下のステップへ進んでください</div>
+          <div class="success-note" id="minimax-success">✓ BGM生成完了！</div>
+          <div id="minimax-player-wrap" style="display:none;margin-top:12px;">
+            <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">生成されたBGMを試聴：</div>
+            <audio id="minimax-audio-player" controls
+              style="width:100%;border-radius:8px;accent-color:var(--gold);background:var(--bg4);">
+            </audio>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <a id="minimax-dl-btn" class="btn-ghost" download="minimax_bgm.mp3"
+                style="font-size:11px;padding:8px;">
+                ⬇ BGMをダウンロード
+              </a>
+            </div>
+          </div>
           <div class="err" id="minimax-err"></div>
         </div>
         <div style="margin-top:12px;font-size:11px;color:var(--muted);text-align:center;">または</div>
@@ -559,6 +571,11 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
           <div class="drop-text">SUNOで作ったBGM（MP3）を選択</div>
         </div>
         <div class="success-note" id="bgm-loaded">✓ <span id="bgm-name"></span></div>
+        <div id="bgm-player-wrap" style="display:none;margin-top:10px;margin-bottom:4px;">
+          <audio id="bgm-audio-player" controls
+            style="width:100%;border-radius:8px;accent-color:var(--green);">
+          </audio>
+        </div>
         <div class="vol-row">
           <span class="vol-label">BGM音量</span>
           <input type="range" id="vol" min="10" max="100" value="65" oninput="document.getElementById('vol-val').textContent=this.value+'%'">
@@ -828,34 +845,44 @@ async function analyzeVideoWithGemini(file, index) {
     await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
     const dur = v.duration || 10;
 
-    // 動画の長さに応じてフレーム数を決定（長い動画ほど多く抽出）
-    const numClips = dur >= 30 ? 4 : dur >= 15 ? 3 : dur >= 8 ? 2 : 1;
-    const frameTimes = Array.from({length: numClips}, (_, i) =>
-      dur * (i + 0.5) / numClips
+    // 6秒ごとに1フレーム抽出（最大10枚）
+    // 各フレームの正確な開始時間をGeminiに渡す
+    const INTERVAL_SEC = 6;
+    const maxFrames = 10;
+    const frameCount = Math.min(maxFrames, Math.max(1, Math.floor(dur / INTERVAL_SEC)));
+    const frameTimes = Array.from({length: frameCount}, (_, i) =>
+      Math.min(i * INTERVAL_SEC + INTERVAL_SEC * 0.5, dur * 0.95)
     );
+
     const frames = await captureFrames(file, frameTimes);
     if (frames.length === 0) throw new Error('フレーム取得失敗');
 
+    // Geminiに「各フレームの開始時間」を明示して渡す
+    const frameInfo = frameTimes.map((t, i) =>
+      `フレーム${i+1}: ${t.toFixed(1)}秒時点`
+    ).join(', ');
+
     const parts = [
-      { text: `動画(${Math.round(dur)}秒)から抽出した${frames.length}枚のフレーム画像を見て評価してください。
-マークダウン不使用。以下のJSONのみで回答してください（clipsは最大${numClips}件）:
+      { text: `動画(${Math.round(dur)}秒)から${frames.length}枚のフレームを抽出しました。
+各フレームの撮影時刻: ${frameInfo}
+
+マークダウン不使用。以下のJSONのみで回答（clipsは${frames.length}件以内）:
 {
-  "total": 0-100,
   "clips": [
-    {"start_sec": 開始秒, "duration_sec": 3-8, "score": 0-100, "reason": "日本語一言"},
+    {"start_sec": フレームの撮影時刻そのまま, "clip_duration_sec": 2-3, "score": 0-100, "reason": "日本語一言"},
     ...
   ]
 }
-【スコアリング基準（100点満点）】
-- 笑顔・楽しそうな表情の子どもや人が映っている: +40点（最重要）
+【スコアリング基準】
+- 笑顔・楽しそうな表情の子どもや人: +40点（最重要）
 - 動きが多くアクティブなシーン: +25点
 - 明るく鮮明な映像: +20点
-- 印象的・ユニークな瞬間: +15点
-【減点ルール】
-- 不機嫌・泣いている・怒っている表情が映っている: -40点（必ず低スコアにすること）
-- 暗い・ブレている・ピンぼけ: -20点
+- 印象的な瞬間: +15点
+【減点】
+- 不機嫌・泣き顔・怒り顔: -40点（必ず低スコア）
+- 暗い・ブレている: -20点
 - 人が映っていない: -10点
-各フレームに対応するクリップを提案してください。動画の長さ${Math.round(dur)}秒を超えないようにしてください。` },
+start_secは必ずフレームの撮影時刻を使用してください。動画長${Math.round(dur)}秒を超えないこと。` },
       ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
     ];
 
@@ -866,7 +893,7 @@ async function analyzeVideoWithGemini(file, index) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 400 }
+          generationConfig: { temperature: 0.1, maxOutputTokens: 600 }
         })
       }
     );
@@ -881,21 +908,23 @@ async function analyzeVideoWithGemini(file, index) {
     const clean = text.replace(/```json|```/g, '').trim();
     const parsed = JSON.parse(clean);
 
-    // 複数クリップをそれぞれ独立したシーンとして返す
     const clips = (parsed.clips || []).map((c, ci) => ({
-      total: Math.round(c.score || parsed.total || 50),
-      bestMoment: Math.max(0, Math.min(c.start_sec || frameTimes[ci] || 0, dur - (c.duration_sec || 5))),
-      clipDuration: Math.min(c.duration_sec || 5, 8),
+      total: Math.round(c.score || 50),
+      bestMoment: Math.max(0, Math.min(
+        parseFloat(c.start_sec) || frameTimes[ci] || 0,
+        dur - (parseFloat(c.clip_duration_sec) || 3) - 0.1
+      )),
+      clipDuration: Math.min(Math.max(2, parseFloat(c.clip_duration_sec) || 3), 3),
       reason: c.reason || '',
-      index,      // 元動画のインデックス
+      index,
       clipIndex: ci,
-      file        // 元ファイルへの参照
+      file
     }));
 
     return clips.length > 0 ? clips : [{
-      total: Math.round(parsed.total || 50),
+      total: 50,
       bestMoment: Math.round(dur * 0.3),
-      clipDuration: 5,
+      clipDuration: 3,
       reason: '自動抽出',
       index, clipIndex: 0, file
     }];
@@ -932,53 +961,58 @@ async function localFallbackScore(file, index) {
   }
 }
 
-// シーン選定：スコア上位クリップを採用、撮影順に並び替え
+// シーン選定：スコア上位クリップを採用
+// ルール：同一動画内で開始時間が近いクリップは除外し、飛び石で採用する
 function selectScenes(sortedClips, targetSec) {
   if (sortedClips.length === 0) return [];
 
-  // スコア60点以上を優先。なければ上位半数
-  let candidates = sortedClips.filter(s => s.total >= 60);
-  if (candidates.length === 0) candidates = sortedClips.slice(0, Math.max(1, Math.ceil(sortedClips.length / 2)));
+  const MIN_GAP_SEC = 5; // 同一動画内でこれ以上離れていないクリップは除外
+
+  // スコア降順で採用候補を絞る
+  // 各動画(index)ごとに「採用済み開始時間リスト」を管理し、
+  // 近すぎるクリップをスキップする
+  const adoptedByIndex = {}; // { index: [bestMoment, ...] }
 
   const selected = [];
   let total = 0;
-  for (const s of candidates) {
-    const dur = Math.max(2, Math.min(s.clipDuration || 3, 3)); // 2〜3秒に制限
+
+  for (const s of sortedClips) {
+    if (total >= targetSec * 1.2) break;
+
+    const adopted = adoptedByIndex[s.index] || [];
+    // 同一動画内で既に採用済みのクリップと近すぎる場合はスキップ
+    const tooClose = adopted.some(t => Math.abs(t - s.bestMoment) < MIN_GAP_SEC);
+    if (tooClose) continue;
+
+    const dur = Math.max(2, Math.min(s.clipDuration || 3, 3));
     selected.push({ ...s, actualDuration: dur });
+    adoptedByIndex[s.index] = [...adopted, s.bestMoment];
     total += dur;
-    if (total >= targetSec * 1.2) break; // 72秒を超えたら打ち切り
   }
 
-  // 同じ動画(index)から連続するクリップを避けるよう並び替え
-  // まず撮影順に並び替え
-  selected.sort((a, b) => a.index !== b.index ? a.index - b.index : a.clipIndex - b.clipIndex);
-
-  // 同じindexが連続しないよう間引く
-  const interleaved = [];
-  const used = new Set();
-  let remaining = [...selected];
-  while (remaining.length > 0) {
-    // 直前と異なるindexのクリップを探す
-    const lastIdx = interleaved.length > 0 ? interleaved[interleaved.length - 1].index : -1;
-    const nextIdx = remaining.findIndex(s => s.index !== lastIdx);
-    if (nextIdx === -1) {
-      // 全て同じindexの場合はそのまま追加
-      interleaved.push(...remaining);
-      break;
-    }
-    interleaved.push(remaining.splice(nextIdx, 1)[0]);
+  if (selected.length === 0) {
+    // フォールバック：スコア上位1件だけ採用
+    const top = sortedClips[0];
+    return [{ ...top, actualDuration: 3 }];
   }
 
-  // 先頭を最高スコアのクリップに入れ替え（同じindexにならない範囲で）
-  if (interleaved.length > 1) {
-    const topIdx = interleaved.reduce((best, s, i) => s.total > interleaved[best].total ? i : best, 0);
+  // 撮影順（index昇順 → bestMoment昇順）に並び替え
+  selected.sort((a, b) =>
+    a.index !== b.index ? a.index - b.index : a.bestMoment - b.bestMoment
+  );
+
+  // 先頭を最高スコアのクリップに入れ替え
+  if (selected.length > 1) {
+    const topIdx = selected.reduce((best, s, i) =>
+      s.total > selected[best].total ? i : best, 0
+    );
     if (topIdx !== 0) {
-      const top = interleaved.splice(topIdx, 1)[0];
-      interleaved.unshift(top);
+      const top = selected.splice(topIdx, 1)[0];
+      selected.unshift(top);
     }
   }
 
-  return interleaved;
+  return selected;
 }
 
 // ブラウザ上でディゾルブ合成（白フレーム末尾方式）
@@ -1345,7 +1379,7 @@ async function generateMiniMax() {
 
     // MiniMax用に歌詞タグを変換
     // [Verse 1] → [verse], [Chorus] → [chorus] など
-    const lyricsForMinimax = lines
+    let lyricsForMinimax = lines
       .filter(l => !l.toLowerCase().includes('[style:'))
       .join('\n')
       .replace(/\[Verse\s*\d*\]/gi, '[verse]')
@@ -1356,9 +1390,16 @@ async function generateMiniMax() {
       .replace(/\[Intro\]/gi, '[intro]')
       .trim();
 
-    // プロンプト：日本語家族動画向けに最適化
+    // プロンプト：日本語家族動画向けに最適化（イントロなし厳命）
     const prompt = styleInner + ', Japanese vocals, emotional family memory, ' +
-      'professional studio quality, warm and touching, start immediately with vocals';
+      'professional studio quality, warm and touching, ' +
+      'NO intro, NO instrumental opening, vocals start on beat 1 immediately';
+
+    // 歌詞の先頭に空の[intro]タグを追加してイントロを最小化
+    // [verse]等の最初のタグの前に[intro]を1行挿入
+    if (!lyricsForMinimax.toLowerCase().startsWith('[intro]')) {
+      lyricsForMinimax = '[intro]\n' + lyricsForMinimax;
+    }
 
     setProgress('minimax-prog-fill', 'minimax-prog-label', 25, 'BGMを生成中...');
 
@@ -1408,9 +1449,17 @@ async function generateMiniMax() {
     document.getElementById('bgm-loaded').style.display = 'block';
     setProgress('minimax-prog-fill', 'minimax-prog-label', 100, '完了！');
     document.getElementById('minimax-success').style.display = 'block';
+
+    // オーディオプレイヤーにセット
+    const audioUrl = URL.createObjectURL(blob);
+    const player = document.getElementById('minimax-audio-player');
+    player.src = audioUrl;
+    document.getElementById('minimax-dl-btn').href = audioUrl;
+    document.getElementById('minimax-player-wrap').style.display = 'block';
+
     checkMergeReady();
     openStep('step-merge');
-    document.getElementById('step-merge').scrollIntoView({ behavior: 'smooth' });
+    document.getElementById('minimax-player-wrap').scrollIntoView({ behavior: 'smooth' });
 
   } catch(err) {
     showErr('minimax-err', 'エラー: ' + err.message);
@@ -1442,6 +1491,9 @@ function onBgmSelected(e) {
   if (!bgmFile) return;
   document.getElementById('bgm-name').textContent = bgmFile.name;
   document.getElementById('bgm-loaded').style.display = 'block';
+  const url = URL.createObjectURL(bgmFile);
+  document.getElementById('bgm-audio-player').src = url;
+  document.getElementById('bgm-player-wrap').style.display = 'block';
   checkMergeReady();
 }
 
@@ -1507,9 +1559,18 @@ async function startMerge() {
 
     setProgress('merge-prog-fill', 'merge-prog-label', 60, '動画と合成中...');
 
-    // MediaRecorderで動画+音声を合成
-    document.body.appendChild(videoEl);
+    // 動画のサイズを確実に取得（videoWidthはplay後に確定するため先にロード）
     videoEl.style.display = 'none';
+    document.body.appendChild(videoEl);
+
+    // 動画を一度再生してサイズを確定させる
+    await videoEl.play().catch(() => {});
+    videoEl.pause();
+    videoEl.currentTime = 0;
+    await new Promise(r => { videoEl.onseeked = r; setTimeout(r, 2000); });
+
+    const vw = videoEl.videoWidth  || 1280;
+    const vh = videoEl.videoHeight || 720;
 
     const audioEl = document.createElement('audio');
     audioEl.src = URL.createObjectURL(wavBlob);
@@ -1517,8 +1578,8 @@ async function startMerge() {
     document.body.appendChild(audioEl);
 
     const canvas = document.createElement('canvas');
-    canvas.width  = videoEl.videoWidth  || 1280;
-    canvas.height = videoEl.videoHeight || 720;
+    canvas.width  = vw;
+    canvas.height = vh;
     const ctx2d = canvas.getContext('2d');
 
     const liveCtx = new AudioCtx();
@@ -1533,7 +1594,7 @@ async function startMerge() {
 
     const mime2 = MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
       ? 'video/webm;codecs=vp9,opus' : 'video/webm';
-    const rec = new MediaRecorder(combined, { mimeType: mime2 });
+    const rec = new MediaRecorder(combined, { mimeType: mime2, videoBitsPerSecond: 5000000 });
     const chunks = [];
     rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
@@ -1542,7 +1603,7 @@ async function startMerge() {
       const dlUrl = URL.createObjectURL(blob);
       document.getElementById('dl-link').href = dlUrl;
       document.getElementById('dl-wrap').style.display = 'block';
-      document.getElementById('merge-prog').style.display = 'none'; // 進捗バーを非表示
+      document.getElementById('merge-prog').style.display = 'none';
       markDone('step-merge', '✓ 完成');
       setStatus('merge-status', '✓ 完成', 'ok');
       btn.disabled = false;
@@ -1552,22 +1613,32 @@ async function startMerge() {
       document.getElementById('dl-wrap').scrollIntoView({ behavior: 'smooth' });
     };
 
-    rec.start(200);
-    videoEl.play(); audioEl.play();
+    // setIntervalで描画（バックグラウンドでも止まらない）
+    const FPS = 30;
+    rec.start(Math.round(1000 / FPS));
+    await videoEl.play().catch(() => {});
+    await audioEl.play().catch(() => {});
 
     const startTs = performance.now();
-    const drawLoop = () => {
-      ctx2d.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
-      const el = (performance.now() - startTs) / 1000;
-      const pct = 60 + Math.min((el / duration) * 38, 38);
-      setProgress('merge-prog-fill', 'merge-prog-label', pct,
-        `合成中... ${Math.round(el)}秒 / ${Math.round(duration)}秒`);
-      if (el < duration) requestAnimationFrame(drawLoop);
-      else if (rec.state !== 'inactive') rec.stop();
-    };
+    await new Promise(resolve => {
+      const loop = setInterval(() => {
+        // 動画フレームをcanvasに描画
+        if (videoEl.readyState >= 2) {
+          ctx2d.drawImage(videoEl, 0, 0, vw, vh);
+        }
+        const elapsed = (performance.now() - startTs) / 1000;
+        const pct = 60 + Math.min((elapsed / duration) * 38, 38);
+        setProgress('merge-prog-fill', 'merge-prog-label', pct,
+          `合成中... ${Math.round(elapsed)}秒 / ${Math.round(duration)}秒`);
 
-    videoEl.onplay = () => requestAnimationFrame(drawLoop);
-    videoEl.onended = () => { if (rec.state !== 'inactive') rec.stop(); };
+        // 終了判定：動画が終わった or 経過時間がdurationを超えた
+        if (videoEl.ended || elapsed >= duration + 0.5) {
+          clearInterval(loop);
+          if (rec.state !== 'inactive') rec.stop();
+          resolve();
+        }
+      }, Math.round(1000 / FPS));
+    });
 
   } catch(err) {
     showErr('merge-err', 'エラー: ' + err.message);
