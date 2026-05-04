@@ -1153,27 +1153,17 @@ async function buildCompositeVideo(scenes) {
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
-  // 解像度に応じてビットレートを動的に設定
-  // 縦動画(1080x1920)は横動画(1920x1080)より高ビットレートが必要
+  // ビットレート：解像度に応じて設定（ブラウザエンコードの限界を考慮）
   const pixels = W * H;
-  const targetBitrate = pixels >= 1920 * 1080
-    ? 12000000  // FHD以上: 12Mbps
-    : pixels >= 1280 * 720
-    ? 8000000   // HD: 8Mbps
-    : 6000000;  // それ以下: 6Mbps
+  const targetBitrate = pixels >= 1280 * 720 ? 8000000 : 5000000;
 
-  // vp8はブラウザのソフトウェアエンコードで品質が安定する
-  const mime = MediaRecorder.isTypeSupported('video/webm;codecs=vp8')
-    ? 'video/webm;codecs=vp8' : 'video/webm';
-  const stream  = canvas.captureStream(30);
-  const rec     = new MediaRecorder(stream, {
-    mimeType: mime,
-    videoBitsPerSecond: targetBitrate
-  });
-  const chunks  = [];
-  rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+  // コーデック選択
+  const mime = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm']
+    .find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
-  // --- STEP3: シーンを順番に描画（白シーン対応）---
+  const stream = canvas.captureStream(FPS);
+  const chunks = [];
+
   // 白フレーム描画ヘルパー
   function drawWhite() {
     ctx.fillStyle = '#ffffff';
@@ -1186,18 +1176,29 @@ async function buildCompositeVideo(scenes) {
     else { drawContain(ctx, el, W, H); }
   }
 
+  // --- STEP3: 描画してからrecorder開始（空フレーム防止）---
+  // 最初のフレームを描画してからrecorderを起動
+  drawScene(videoEls.find(v => v !== null) || null);
+
+  const rec = new MediaRecorder(stream, {
+    mimeType: mime,
+    videoBitsPerSecond: targetBitrate
+  });
+  rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+
   return new Promise(async resolve => {
     rec.onstop = () => {
       setProgress('analyze-prog-fill', 'analyze-prog-label', 80, '動画合成完了！歌詞を生成中...');
       resolve(new Blob(chunks, { type: 'video/webm' }));
     };
-    rec.start(INTERVAL);
+    // timeslice=500ms：頻繁にデータを取得して確実性を高める
+    rec.start(500);
 
     for (let si = 0; si < allScenes.length; si++) {
       const scene   = allScenes[si];
-      const v       = videoEls[si];       // null = 白シーン
+      const v       = videoEls[si];
       const nextV   = si + 1 < allScenes.length ? videoEls[si + 1] : undefined;
-      const clipMs  = Math.max(400, (scene.actualDuration || 3) * 1000);
+      const clipMs  = Math.max(1000, (scene.actualDuration || 3) * 1000);
       const dissolveStartMs = clipMs - DISSOLVE_S * 1000;
 
       // 動画シーンのみplay
@@ -1713,25 +1714,24 @@ async function startMerge() {
     const asSrc = liveCtx.createMediaElementSource(audioEl);
     asSrc.connect(dest);
 
+    const videoStream = canvas.captureStream(30);
     const combined = new MediaStream([
-      ...canvas.captureStream(30).getVideoTracks(),
+      ...videoStream.getVideoTracks(),
       ...dest.stream.getAudioTracks()
     ]);
 
-    // 解像度に応じてビットレートを動的設定
     const pixels2 = vw * vh;
-    const targetBitrate2 = pixels2 >= 1920 * 1080
-      ? 12000000 : pixels2 >= 1280 * 720 ? 8000000 : 6000000;
+    const targetBitrate2 = pixels2 >= 1280 * 720 ? 8000000 : 5000000;
 
-    // vp8+opusで安定した品質を確保
-    const mime2 = MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')
-      ? 'video/webm;codecs=vp8,opus' : 'video/webm';
+    const mime2 = ['video/webm;codecs=vp8,opus', 'video/webm;codecs=vp9,opus', 'video/webm']
+      .find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+
+    const chunks = [];
     const rec = new MediaRecorder(combined, {
       mimeType: mime2,
       videoBitsPerSecond: targetBitrate2,
-      audioBitsPerSecond: 192000
+      audioBitsPerSecond: 128000
     });
-    const chunks = [];
     rec.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
 
     rec.onstop = () => {
@@ -1750,11 +1750,14 @@ async function startMerge() {
       document.getElementById('dl-wrap').scrollIntoView({ behavior: 'smooth' });
     };
 
-    // setIntervalで描画（バックグラウンドでも止まらない）
-    const FPS = 30;
-    rec.start(Math.round(1000 / FPS));
+    // 最初のフレームを描画してからrecorder開始（空フレーム防止）
+    ctx2d.fillStyle = '#000';
+    ctx2d.fillRect(0, 0, vw, vh);
+    rec.start(500);
+
     await videoEl.play().catch(() => {});
     await audioEl.play().catch(() => {});
+    const FPS = 30;
 
     const startTs = performance.now();
     await new Promise(resolve => {
