@@ -833,13 +833,29 @@ async function captureFrames(file, times) {
       if (idx >= times.length) { resolve(frames); return; }
       v.currentTime = times[idx];
       v.onseeked = () => {
-        const c = document.createElement('canvas');
-        // サムネは小さめで十分（APIコスト削減）
-        c.width = 480; c.height = Math.round(480 * v.videoHeight / (v.videoWidth || 480));
-        c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
-        frames.push(c.toDataURL('image/jpeg', 0.7).split(',')[1]);
-        idx++;
-        capture();
+        // シーク後にデコードが追いつくまで少し待つ（黒フレーム対策）
+        const tryCapture = (attempt) => {
+          const c = document.createElement('canvas');
+          c.width = 480; c.height = Math.round(480 * v.videoHeight / (v.videoWidth || 480));
+          const ctx2 = c.getContext('2d');
+          ctx2.drawImage(v, 0, 0, c.width, c.height);
+          // 黒フレーム検出：画素の平均輝度が5以下なら再試行
+          const imgData = ctx2.getImageData(0, 0, Math.min(c.width, 80), Math.min(c.height, 80));
+          let brightness = 0;
+          for (let p = 0; p < imgData.data.length; p += 4) {
+            brightness += (imgData.data[p] + imgData.data[p+1] + imgData.data[p+2]) / 3;
+          }
+          brightness /= (imgData.data.length / 4);
+          if (brightness < 5 && attempt < 3) {
+            // 黒フレームなら100ms待って再試行
+            setTimeout(() => tryCapture(attempt + 1), 100);
+            return;
+          }
+          frames.push(c.toDataURL('image/jpeg', 0.8).split(',')[1]);
+          idx++;
+          capture();
+        };
+        setTimeout(() => tryCapture(0), 80); // 初回も80ms待機
       };
     };
 
@@ -1089,7 +1105,11 @@ async function buildCompositeVideo(scenes) {
     v.currentTime = seekTo;
     await new Promise(resolve => {
       const t = setTimeout(resolve, 5000);
-      v.onseeked = () => { clearTimeout(t); resolve(); };
+      v.onseeked = () => {
+        clearTimeout(t);
+        // シーク後のデコード完了を待つ（黒フレーム対策）
+        setTimeout(resolve, 120);
+      };
     });
     videoEls.push(v);
   }
@@ -1342,18 +1362,17 @@ async function generateLyricsWithGemini(topVideo, selectedScenes, allScores) {
     return `${Math.round(sec)}〜${Math.round(sec + s.actualDuration)}秒: ${s.reason || 'シーン' + (i+1)}`;
   }).join('\n');
 
-  // 上位3シーンから代表フレームを1枚ずつ取得（最大3枚）
-  const frameFiles = selectedScenes.slice(0, 3).map(s => s.file);
+  // 上位シーンから代表フレームをbestMoment時刻で正確に取得（最大5枚）
   const frameParts = [];
-  for (const f of frameFiles) {
-    const v = document.createElement('video');
-    v.src = URL.createObjectURL(f);
-    v.muted = true;
-    await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
-    const dur = v.duration || 5;
-    const imgs = await captureFrames(f, [dur * 0.4]);
+  const topScenes = selectedScenes.slice(0, 5);
+  for (const scene of topScenes) {
+    // bestMoment（実際に使ったシーンの開始時刻）でフレームを取得
+    const seekTime = scene.bestMoment || 0;
+    const imgs = await captureFrames(scene.file, [seekTime]);
     if (imgs.length > 0) {
-      frameParts.push({ inline_data: { mime_type: 'image/jpeg', data: imgs[0] } });
+      frameParts.push({
+        inline_data: { mime_type: 'image/jpeg', data: imgs[0] }
+      });
     }
   }
 
