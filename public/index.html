@@ -1194,6 +1194,31 @@ async function buildCompositeVideo(scenes) {
     // timeslice=500ms：頻繁にデータを取得して確実性を高める
     rec.start(500);
 
+    // フレームが実際に届いているか確認してから描画するヘルパー
+    async function playAndWaitFrame(v) {
+      if (!v || v === null) return;
+      await v.play().catch(() => {});
+      // readyState >= 2（HAVE_CURRENT_DATA）になるまで最大2秒待つ
+      await new Promise(resolve => {
+        if (v.readyState >= 2) { resolve(); return; }
+        const t = setTimeout(resolve, 2000);
+        const onReady = () => { clearTimeout(t); v.removeEventListener('timeupdate', onReady); resolve(); };
+        v.addEventListener('timeupdate', onReady);
+      });
+      // さらに50ms待ってデコードを安定させる
+      await new Promise(r => setTimeout(r, 50));
+    }
+
+    // 安全なdrawScene（readyStateチェック付き）
+    function safeDrawScene(el) {
+      if (el === null) {
+        drawWhite();
+      } else if (el.readyState >= 2) {
+        drawContain(ctx, el, W, H);
+      }
+      // readyState < 2の場合は前フレームをそのまま維持（黒にしない）
+    }
+
     for (let si = 0; si < allScenes.length; si++) {
       const scene   = allScenes[si];
       const v       = videoEls[si];
@@ -1201,12 +1226,12 @@ async function buildCompositeVideo(scenes) {
       const clipMs  = Math.max(1000, (scene.actualDuration || 3) * 1000);
       const dissolveStartMs = clipMs - DISSOLVE_S * 1000;
 
-      // 動画シーンのみplay
-      if (v !== null) await v.play().catch(() => {});
+      // 再生してフレームが届くまで待つ
+      await playAndWaitFrame(v);
 
-      // 次が動画シーンなら先にフレームを確保
-      if (nextV) {
-        await nextV.play().catch(() => {});
+      // 次シーンも事前に再生してフレームを確保してから止める
+      if (nextV && nextV !== null) {
+        await playAndWaitFrame(nextV);
         nextV.pause();
       }
 
@@ -1225,20 +1250,20 @@ async function buildCompositeVideo(scenes) {
             }
             const alpha = Math.min(1, (elapsed - dissolveStartMs) / (DISSOLVE_S * 1000));
             ctx.globalAlpha = 1;
-            drawScene(v);
+            safeDrawScene(v);
             ctx.globalAlpha = alpha;
-            drawScene(nextV);
+            safeDrawScene(nextV);
             ctx.globalAlpha = 1;
           } else {
             // ---- 通常描画 ----
-            drawScene(v);
+            safeDrawScene(v);
           }
 
           // シーン終了
           if (elapsed >= clipMs) {
             clearInterval(loop);
             if (v !== null) v.pause();
-            if (si < scenes.length) { // 実動画シーンのみ進捗表示
+            if (si < scenes.length) {
               setProgress('analyze-prog-fill', 'analyze-prog-label',
                 66 + Math.round(((si + 1) / scenes.length) * 13),
                 `合成中... ${si + 1} / ${scenes.length} 本目`
