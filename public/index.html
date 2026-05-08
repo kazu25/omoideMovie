@@ -1155,10 +1155,10 @@ async function buildCompositeVideo(scenes) {
 
   // ビットレート：解像度に応じて設定（ブラウザエンコードの限界を考慮）
   const pixels = W * H;
-  const targetBitrate = pixels >= 1280 * 720 ? 8000000 : 5000000;
+  const targetBitrate = pixels >= 1280 * 720 ? 12000000 : 6000000;
 
-  // コーデック選択
-  const mime = ['video/webm;codecs=vp8', 'video/webm;codecs=vp9', 'video/webm']
+  // コーデック選択（vp9優先：同ビットレートで高画質）
+  const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
     .find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
   const stream = canvas.captureStream(FPS);
@@ -1239,7 +1239,8 @@ async function buildCompositeVideo(scenes) {
       let dissolveStarted = false;
 
       await new Promise(r => {
-        const loop = setInterval(() => {
+        let rafId;
+        const loop = () => {
           const elapsed = performance.now() - startTs;
 
           if (elapsed >= dissolveStartMs && nextV !== undefined) {
@@ -1261,7 +1262,7 @@ async function buildCompositeVideo(scenes) {
 
           // シーン終了
           if (elapsed >= clipMs) {
-            clearInterval(loop);
+            cancelAnimationFrame(rafId);
             if (v !== null) v.pause();
             if (si < scenes.length) {
               setProgress('analyze-prog-fill', 'analyze-prog-label',
@@ -1270,8 +1271,11 @@ async function buildCompositeVideo(scenes) {
               );
             }
             r();
+          } else {
+            rafId = requestAnimationFrame(loop);
           }
-        }, INTERVAL);
+        };
+        rafId = requestAnimationFrame(loop);
       });
     }
 
