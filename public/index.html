@@ -505,6 +505,21 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
 
         <div class="video-grid" id="score-grid"></div>
 
+        <div id="clip-detail" style="display:none;margin-top:14px;">
+          <div onclick="toggleClipDetail()"
+            style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;
+                   padding:10px 14px;background:var(--bg3);border:1px solid var(--border);
+                   border-radius:10px;font-size:12px;color:var(--gold);font-weight:500;">
+            <span>🔍 分析詳細（クリップ一覧）</span>
+            <span id="clip-detail-arrow">▼</span>
+          </div>
+          <div id="clip-detail-body"
+            style="display:none;margin-top:6px;padding:12px 14px;background:var(--bg3);
+                   border:1px solid var(--border);border-radius:10px;
+                   font-size:11px;line-height:2;overflow-x:auto;">
+          </div>
+        </div>
+
         <div class="err" id="analyze-err"></div>
       </div>
     </div>
@@ -735,6 +750,62 @@ function selectMood(btn) {
   selectedMood = btn.dataset.mood;
 }
 
+function toggleClipDetail() {
+  const body  = document.getElementById('clip-detail-body');
+  const arrow = document.getElementById('clip-detail-arrow');
+  const open  = body.style.display === 'none';
+  body.style.display  = open ? 'block' : 'none';
+  arrow.textContent   = open ? '▲' : '▼';
+}
+
+function renderClipDetail(allClips, selected) {
+  // 採用クリップを「index-bestMoment」キーで高速検索
+  const selectedKeys = new Set(selected.map(s => `${s.index}-${s.bestMoment}`));
+
+  // 動画インデックスごとにグループ化（登録順）
+  const byVideo = {};
+  for (const c of allClips) {
+    if (!byVideo[c.index]) byVideo[c.index] = [];
+    byVideo[c.index].push(c);
+  }
+
+  let html = '';
+  for (const idx of Object.keys(byVideo).sort((a, b) => a - b)) {
+    const clips = byVideo[idx].sort((a, b) => a.bestMoment - b.bestMoment);
+    const name  = videoFiles[idx] ? videoFiles[idx].name : `動画${+idx + 1}`;
+    html += `<div style="margin-bottom:10px;">
+      <div style="color:var(--cream);font-weight:600;margin-bottom:4px;">📹 ${name}</div>
+      <table style="width:100%;border-collapse:collapse;">
+        <tr style="color:var(--muted);font-size:10px;">
+          <th style="text-align:left;padding:2px 6px;">時刻</th>
+          <th style="text-align:right;padding:2px 6px;">点数</th>
+          <th style="text-align:left;padding:2px 6px;">採用</th>
+          <th style="text-align:left;padding:2px 6px;">reason</th>
+        </tr>`;
+    for (const c of clips) {
+      const key      = `${c.index}-${c.bestMoment}`;
+      const adopted  = selectedKeys.has(key);
+      const rowColor = adopted ? 'color:var(--gold)' : 'color:var(--muted)';
+      const badge    = adopted ? '★採用' : '';
+      const scoreColor = c.total >= 70 ? 'color:#7ecb7e' : c.total >= 50 ? 'color:var(--cream)' : 'color:#e07070';
+      html += `<tr style="${rowColor}">
+        <td style="padding:2px 6px;white-space:nowrap;">⏱ ${c.bestMoment}秒</td>
+        <td style="padding:2px 6px;text-align:right;${scoreColor};font-weight:600;">${c.total}点</td>
+        <td style="padding:2px 6px;">${badge}</td>
+        <td style="padding:2px 6px;">${c.reason || ''}</td>
+      </tr>`;
+    }
+    html += '</table></div>';
+  }
+
+  const body = document.getElementById('clip-detail-body');
+  body.innerHTML = html;
+  document.getElementById('clip-detail').style.display = 'block';
+  // デフォルトは折りたたみ（クリックで開く）
+  body.style.display = 'none';
+  document.getElementById('clip-detail-arrow').textContent = '▼';
+}
+
 async function startAnalyze() {
   hideErr('analyze-err');
   const btn = document.getElementById('analyze-btn');
@@ -776,6 +847,7 @@ async function startAnalyze() {
     const sorted = scores.sort((a, b) => b.total - a.total);
     const selected = selectScenes(sorted, 60);
 
+    renderClipDetail(scores, selected);
     setProgress('analyze-prog-fill', 'analyze-prog-label', 65, '動画を合成中（ディゾルブ処理）...');
 
     // 3. 選んだシーンをディゾルブでつないで1本の動画を生成
