@@ -759,8 +759,9 @@ function toggleClipDetail() {
 }
 
 function renderClipDetail(allClips, selected) {
-  // 採用クリップを「index-bestMoment」キーで高速検索
-  const selectedKeys = new Set(selected.map(s => `${s.index}-${s.bestMoment}`));
+  const selectedKeys   = new Set(selected.map(s => `${s.index}-${s.bestMoment}`));
+  const videoMaxScores = window._videoMaxScores || {};
+  const threshold      = window._scoreThreshold || 0;
 
   // 動画インデックスごとにグループ化（登録順）
   const byVideo = {};
@@ -769,39 +770,60 @@ function renderClipDetail(allClips, selected) {
     byVideo[c.index].push(c);
   }
 
-  let html = '';
+  let html = `<div style="margin-bottom:10px;padding:8px 10px;background:var(--bg4);
+    border-radius:8px;font-size:10px;color:var(--muted);">
+    採用しきい値：各動画の最高点の平均 = <b style="color:var(--cream);">${threshold}点</b>
+    （これを下回る動画は採用から除外されます）
+  </div>`;
+
   for (const idx of Object.keys(byVideo).sort((a, b) => a - b)) {
-    const clips = byVideo[idx].sort((a, b) => a.bestMoment - b.bestMoment);
-    const name  = videoFiles[idx] ? videoFiles[idx].name : `動画${+idx + 1}`;
-    html += `<div style="margin-bottom:10px;">
-      <div style="color:var(--cream);font-weight:600;margin-bottom:4px;">📹 ${name}</div>
-      <table style="width:100%;border-collapse:collapse;">
-        <tr style="color:var(--muted);font-size:10px;">
-          <th style="text-align:left;padding:2px 6px;">時刻</th>
-          <th style="text-align:right;padding:2px 6px;">点数</th>
-          <th style="text-align:left;padding:2px 6px;">採用</th>
-          <th style="text-align:left;padding:2px 6px;">reason</th>
-        </tr>`;
+    const clips      = byVideo[idx].sort((a, b) => a.bestMoment - b.bestMoment);
+    const name       = videoFiles[idx] ? videoFiles[idx].name : `動画${+idx + 1}`;
+    const maxScore   = videoMaxScores[idx] || 0;
+    const excluded   = threshold > 0 && maxScore < threshold;
+    const headerColor = excluded ? 'color:#e07070' : 'color:var(--cream)';
+    const badge       = excluded
+      ? `<span style="background:#e07070;color:#fff;font-size:9px;padding:1px 6px;border-radius:4px;margin-left:6px;">低スコア除外</span>`
+      : `<span style="background:var(--bg4);color:var(--muted);font-size:9px;padding:1px 6px;border-radius:4px;margin-left:6px;">最高 ${maxScore}点</span>`;
+
+    html += `<div style="margin-bottom:14px;">
+      <div style="${headerColor};font-weight:600;margin-bottom:6px;">📹 ${name}${badge}</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">`;
+
     for (const c of clips) {
-      const key      = `${c.index}-${c.bestMoment}`;
-      const adopted  = selectedKeys.has(key);
-      const rowColor = adopted ? 'color:var(--gold)' : 'color:var(--muted)';
-      const badge    = adopted ? '★採用' : '';
-      const scoreColor = c.total >= 70 ? 'color:#7ecb7e' : c.total >= 50 ? 'color:var(--cream)' : 'color:#e07070';
-      html += `<tr style="${rowColor}">
-        <td style="padding:2px 6px;white-space:nowrap;">⏱ ${c.bestMoment}秒</td>
-        <td style="padding:2px 6px;text-align:right;${scoreColor};font-weight:600;">${c.total}点</td>
-        <td style="padding:2px 6px;">${badge}</td>
-        <td style="padding:2px 6px;">${c.reason || ''}</td>
-      </tr>`;
+      const key         = `${c.index}-${c.bestMoment}`;
+      const adopted     = selectedKeys.has(key);
+      const scoreColor  = c.total >= 70 ? '#7ecb7e' : c.total >= 50 ? 'var(--cream)' : '#e07070';
+      const rowBg       = adopted ? 'background:rgba(200,160,60,0.1);border:1px solid rgba(200,160,60,0.3)'
+                                  : 'background:var(--bg4);border:1px solid transparent';
+      const thumb       = c.frameImage
+        ? `<img src="data:image/jpeg;base64,${c.frameImage}"
+            style="width:80px;height:52px;object-fit:cover;border-radius:4px;flex-shrink:0;">`
+        : `<div style="width:80px;height:52px;background:var(--bg3);border-radius:4px;flex-shrink:0;
+            display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:10px;">no img</div>`;
+      const adoptedBadge = adopted
+        ? `<span style="background:var(--gold);color:#1a1510;font-size:9px;font-weight:700;
+            padding:1px 6px;border-radius:4px;">★採用</span>` : '';
+
+      html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;
+          border-radius:8px;${rowBg}">
+        ${thumb}
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
+            <span style="color:var(--muted);font-size:10px;">⏱ ${c.bestMoment}秒</span>
+            <span style="color:${scoreColor};font-weight:700;font-size:12px;">${c.total}点</span>
+            ${adoptedBadge}
+          </div>
+          <div style="color:var(--cream);font-size:11px;line-height:1.4;">${c.reason || '—'}</div>
+        </div>
+      </div>`;
     }
-    html += '</table></div>';
+    html += '</div></div>';
   }
 
   const body = document.getElementById('clip-detail-body');
   body.innerHTML = html;
   document.getElementById('clip-detail').style.display = 'block';
-  // デフォルトは折りたたみ（クリックで開く）
   body.style.display = 'none';
   document.getElementById('clip-detail-arrow').textContent = '▼';
 }
@@ -1027,7 +1049,8 @@ start_secは必ずフレームの撮影時刻を使用してください。動�
       reason: c.reason || '',
       index,
       clipIndex: ci,
-      file
+      file,
+      frameImage: frames[ci] || null  // サムネイル用にフレーム画像を保持
     }));
 
     return clips.length > 0 ? clips : [{
@@ -1035,7 +1058,8 @@ start_secは必ずフレームの撮影時刻を使用してください。動�
       bestMoment: Math.round(dur * 0.3),
       clipDuration: 3,
       reason: '自動抽出',
-      index, clipIndex: 0, file
+      index, clipIndex: 0, file,
+      frameImage: null
     }];
 
   } catch(e) {
@@ -1075,17 +1099,31 @@ async function localFallbackScore(file, index) {
 function selectScenes(sortedClips, targetSec) {
   if (sortedClips.length === 0) return [];
 
+  // ── 動画ごとの最高スコアを計算し、平均を下回る動画を除外 ──
+  const videoMaxScores = {};
+  for (const c of sortedClips) {
+    if (videoMaxScores[c.index] === undefined || c.total > videoMaxScores[c.index]) {
+      videoMaxScores[c.index] = c.total;
+    }
+  }
+  window._videoMaxScores = videoMaxScores; // クリップ詳細表示用に保存
+  const videoIndices = Object.keys(videoMaxScores);
+  let clipsToProcess = sortedClips;
+  if (videoIndices.length > 1) {
+    const meanMaxScore = Object.values(videoMaxScores).reduce((a, b) => a + b, 0) / videoIndices.length;
+    window._scoreThreshold = Math.round(meanMaxScore); // 詳細表示用
+    const filtered = sortedClips.filter(c => videoMaxScores[c.index] >= meanMaxScore);
+    if (filtered.length > 0) clipsToProcess = filtered;
+  }
+
   const MIN_GAP_SEC = 5; // 同一動画内でこれ以上離れていないクリップは除外
 
-  // スコア降順で採用候補を絞る
-  // 各動画(index)ごとに「採用済み開始時間リスト」を管理し、
-  // 近すぎるクリップをスキップする
   const adoptedByIndex = {}; // { index: [bestMoment, ...] }
 
   const selected = [];
   let total = 0;
 
-  for (const s of sortedClips) {
+  for (const s of clipsToProcess) {
     if (total >= targetSec) break;
 
     const adopted = adoptedByIndex[s.index] || [];
