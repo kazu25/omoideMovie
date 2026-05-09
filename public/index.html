@@ -523,8 +523,10 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
         <textarea class="lyrics-box" id="lyrics-box" placeholder="シーン分析が完了すると、ここに歌詞が表示されます..."></textarea>
         <div class="btn-row">
           <button class="btn-ghost" id="copy-btn" onclick="copyLyrics()">📋 歌詞をコピー</button>
+          <button class="btn-ghost" id="regen-lyrics-btn" onclick="regenerateLyrics()">🔄 歌詞を再生成</button>
           <a href="https://suno.com" target="_blank" class="btn-ghost">🎵 SUNOを開く</a>
         </div>
+        <div class="err" id="regen-lyrics-err"></div>
         <div style="margin-top:14px;padding:16px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;">
           <div style="font-size:12px;color:var(--gold);font-weight:500;margin-bottom:6px;">✦ MiniMax Music 2.6 で自動生成（推奨）</div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.8;">
@@ -791,7 +793,9 @@ async function startAnalyze() {
 
     // 5. 歌詞生成
     const topVideo = sorted[0].file;
-    window._selectedScenes = selected; // Lyria生成時のタイムスタンプ参照用
+    window._selectedScenes = selected; // 歌詞再生成・Lyria生成時のタイムスタンプ参照用
+    window._topVideo = topVideo;        // 歌詞再生成用
+    window._allScores = scores;         // 歌詞再生成用
     const lyrics = await generateLyricsWithGemini(topVideo, selected, scores);
     generatedLyrics = lyrics;
     document.getElementById('lyrics-box').value = lyrics;
@@ -1434,6 +1438,31 @@ async function generateLyria() {
 // ────────────────────────────────────────
 //  LYRICS GENERATION
 // ────────────────────────────────────────
+async function regenerateLyrics() {
+  if (!window._selectedScenes || !window._topVideo) {
+    document.getElementById('regen-lyrics-err').textContent = '先にシーン分析を実行してください';
+    return;
+  }
+  if (!apiKey) {
+    document.getElementById('regen-lyrics-err').textContent = 'APIキーを入力してください';
+    return;
+  }
+  document.getElementById('regen-lyrics-err').textContent = '';
+  const btn = document.getElementById('regen-lyrics-btn');
+  btn.disabled = true;
+  btn.textContent = '⏳ 再生成中...';
+  try {
+    const lyrics = await generateLyricsWithGemini(window._topVideo, window._selectedScenes, window._allScores || []);
+    generatedLyrics = lyrics;
+    document.getElementById('lyrics-box').value = lyrics;
+  } catch(e) {
+    document.getElementById('regen-lyrics-err').textContent = '再生成に失敗しました: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 歌詞を再生成';
+  }
+}
+
 async function generateLyricsWithGemini(topVideo, selectedScenes, allScores) {
   // 動画フルサイズではなく、各シーンの代表フレームを画像として送る
   const sceneInfo = selectedScenes.map((s, i) => {
