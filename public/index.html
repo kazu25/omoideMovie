@@ -883,13 +883,12 @@ async function analyzeVideoWithGemini(file, index) {
     await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
     const dur = v.duration || 10;
 
-    // 6秒ごとに1フレーム抽出（最大10枚）
-    // 各フレームの正確な開始時間をGeminiに渡す
-    const INTERVAL_SEC = 6;
+    // 動画長÷10枚（1秒単位）でフレーム間隔を決定、最大10枚
+    const INTERVAL_SEC = Math.max(1, Math.round(dur / 10));
     const maxFrames = 10;
     const frameCount = Math.min(maxFrames, Math.max(1, Math.floor(dur / INTERVAL_SEC)));
     const frameTimes = Array.from({length: frameCount}, (_, i) =>
-      Math.min(i * INTERVAL_SEC + INTERVAL_SEC * 0.5, dur * 0.95)
+      Math.min((i + 1) * INTERVAL_SEC, dur - 0.1)
     );
 
     const frames = await captureFrames(file, frameTimes);
@@ -1033,44 +1032,23 @@ function selectScenes(sortedClips, targetSec) {
     return [{ ...top, actualDuration: 3 }];
   }
 
-  // ── 並び替え：同一動画が連続しないよう交互配置 ──
-  // まず撮影順に並べる
+  // ── 並び替え：ファイル登録順・時刻順（時系列ストーリー順）──
   selected.sort((a, b) =>
     a.index !== b.index ? a.index - b.index : a.bestMoment - b.bestMoment
   );
 
-  // 同一indexが連続しないようにインターリーブ
-  const interleaved = [];
-  const remaining = [...selected];
-  while (remaining.length > 0) {
-    const lastIdx = interleaved.length > 0 ? interleaved[interleaved.length - 1].index : -1;
-    // 直前と異なるindexを探す
-    let nextPos = remaining.findIndex(s => s.index !== lastIdx);
-    if (nextPos === -1) nextPos = 0; // 全部同じindexなら先頭から
-    interleaved.push(remaining.splice(nextPos, 1)[0]);
-  }
-
-  // 先頭を最高スコアのクリップに（ただし先頭と同じindexが2番目に来ないよう確認）
-  if (interleaved.length > 1) {
-    const topIdx = interleaved.reduce((best, s, i) =>
-      s.total > interleaved[best].total ? i : best, 0
+  // 先頭を最高スコアのクリップに差し替え（Googleフォトのサムネイル対策）
+  if (selected.length > 1) {
+    const topIdx = selected.reduce((best, s, i) =>
+      s.total > selected[best].total ? i : best, 0
     );
     if (topIdx !== 0) {
-      const top = interleaved.splice(topIdx, 1)[0];
-      // 先頭に入れた後、2番目が同じindexなら3番目以降から別indexを探して入れ替え
-      interleaved.unshift(top);
-      if (interleaved.length > 1 && interleaved[1].index === top.index) {
-        const swapPos = interleaved.findIndex((s, i) => i > 1 && s.index !== top.index);
-        if (swapPos !== -1) {
-          const tmp = interleaved[1];
-          interleaved[1] = interleaved[swapPos];
-          interleaved[swapPos] = tmp;
-        }
-      }
+      const top = selected.splice(topIdx, 1)[0];
+      selected.unshift(top);
     }
   }
 
-  return interleaved;
+  return selected;
 }
 
 // ブラウザ上でディゾルブ合成（白フレーム末尾方式）
