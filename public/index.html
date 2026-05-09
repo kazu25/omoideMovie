@@ -1123,6 +1123,27 @@ async function buildCompositeVideo(scenes) {
     videoEls.push(v);
   }
 
+  // --- STEP1.5: Web Audio API でオリジナル音声をミックス準備 ---
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const audioCtx = new AudioCtx();
+  if (audioCtx.state === 'suspended') await audioCtx.resume();
+  const audioDest = audioCtx.createMediaStreamDestination();
+  const ORIG_AUDIO_VOL = 0.20; // オリジナル音声ボリューム（20%）
+
+  // 各動画にGainNodeを割り当て（nullシーンはnull）
+  const videoGains = videoEls.map(vel => {
+    if (vel === null) return null;
+    try {
+      vel.muted = false; // Web Audio APIにルーティング（スピーカーへは出力しない）
+      const src = audioCtx.createMediaElementSource(vel);
+      const g = audioCtx.createGain();
+      g.gain.value = 0; // 初期は無音
+      src.connect(g);
+      g.connect(audioDest);
+      return g;
+    } catch(e) { return null; }
+  });
+
   // --- STEP2: キャンバスサイズを元動画から動的に決定 ---
   // 最初の実動画要素からサイズを取得
   const firstVideoEl = videoEls.find(v => v !== null);
@@ -1170,7 +1191,11 @@ async function buildCompositeVideo(scenes) {
   const mime = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']
     .find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
 
-  const stream = canvas.captureStream(FPS);
+  const canvasStream = canvas.captureStream(FPS);
+  const stream = new MediaStream([
+    ...canvasStream.getVideoTracks(),
+    ...audioDest.stream.getAudioTracks()
+  ]);
   const chunks = [];
 
   // 白フレーム描画ヘルパー
@@ -1237,6 +1262,7 @@ async function buildCompositeVideo(scenes) {
 
       // 録画ループ開始：プリバッファ済みなのでそのまま再生
       if (v !== null) v.play().catch(() => {});
+      if (videoGains[si]) videoGains[si].gain.value = ORIG_AUDIO_VOL; // 現シーン音声ON
 
       const startTs = performance.now();
       let dissolveStarted = false;
@@ -1250,9 +1276,15 @@ async function buildCompositeVideo(scenes) {
             // ---- ディゾルブ区間 ----
             if (!dissolveStarted) {
               dissolveStarted = true;
-              if (nextV !== null) nextV.play().catch(() => {});
+              if (nextV !== null) {
+                nextV.play().catch(() => {});
+                if (videoGains[si + 1]) videoGains[si + 1].gain.value = 0;
+              }
             }
             const alpha = Math.min(1, (elapsed - dissolveStartMs) / (DISSOLVE_S * 1000));
+            // 音声クロスフェード
+            if (videoGains[si])     videoGains[si].gain.value     = ORIG_AUDIO_VOL * (1 - alpha);
+            if (videoGains[si + 1]) videoGains[si + 1].gain.value = ORIG_AUDIO_VOL * alpha;
             ctx.globalAlpha = 1;
             safeDrawScene(v);
             ctx.globalAlpha = alpha;
@@ -1267,6 +1299,7 @@ async function buildCompositeVideo(scenes) {
           if (elapsed >= clipMs) {
             cancelAnimationFrame(rafId);
             if (v !== null) v.pause();
+            if (videoGains[si]) videoGains[si].gain.value = 0; // 現シーン音声OFF
             if (si < scenes.length) {
               setProgress('analyze-prog-fill', 'analyze-prog-label',
                 66 + Math.round(((si + 1) / scenes.length) * 13),
