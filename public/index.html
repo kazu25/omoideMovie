@@ -1000,7 +1000,7 @@ async function analyzeVideoWithGemini(file, index) {
 マークダウン不使用。以下のJSONのみで回答（clipsは${frames.length}件以内）:
 {
   "clips": [
-    {"start_sec": フレームの撮影時刻そのまま, "clip_duration_sec": 2-3, "score": 0-100, "reason": "日本語一言"},
+    {"start_sec": フレームの撮影時刻そのまま, "clip_duration_sec": 2-3, "score": 0-100, "reason": "場所・人物の行動・表情・季節感・特徴的なものを具体的に30〜50文字で描写（例：「公園の滑り台で大笑いしながら滑り降りる子ども、青空と桜が背景」）"},
     ...
   ]
 }
@@ -1013,6 +1013,11 @@ async function analyzeVideoWithGemini(file, index) {
 - 不機嫌・泣き顔・怒り顔: -40点（必ず低スコア）
 - 暗い・ブレている: -20点
 - 人が映っていない: -10点
+【reasonの書き方】
+- 映っている場所（公園・海・室内など）を必ず含める
+- 人物の具体的な行動（走る・食べる・笑うなど）を描写する
+- 表情や感情（満面の笑み・真剣な顔など）も加える
+- 季節・天気・背景の特徴があれば加える
 start_secは必ずフレームの撮影時刻を使用してください。動画長${Math.round(dur)}秒を超えないこと。` },
       ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
     ];
@@ -1024,7 +1029,7 @@ start_secは必ずフレームの撮影時刻を使用してください。動�
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 600 }
+          generationConfig: { temperature: 0.1, maxOutputTokens: 1200 }
         })
       }
     );
