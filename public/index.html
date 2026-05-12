@@ -772,7 +772,7 @@ function renderClipDetail(allClips, selected) {
 
   let html = `<div style="margin-bottom:10px;padding:8px 10px;background:var(--bg4);
     border-radius:8px;font-size:10px;color:var(--muted);">
-    採用しきい値：各動画の最高点の平均 = <b style="color:var(--cream);">${threshold}点</b>
+    採用しきい値：各動画の最高点の平均 − 10点 = <b style="color:var(--cream);">${threshold}点</b>
     （これを下回る動画は採用から除外されます）
   </div>`;
 
@@ -1116,8 +1116,9 @@ function selectScenes(sortedClips, targetSec) {
   let clipsToProcess = sortedClips;
   if (videoIndices.length > 1) {
     const meanMaxScore = Object.values(videoMaxScores).reduce((a, b) => a + b, 0) / videoIndices.length;
-    window._scoreThreshold = Math.round(meanMaxScore); // 詳細表示用
-    const filtered = sortedClips.filter(c => videoMaxScores[c.index] >= meanMaxScore);
+    const scoreThreshold = meanMaxScore - 10;
+    window._scoreThreshold = Math.round(scoreThreshold); // 詳細表示用
+    const filtered = sortedClips.filter(c => videoMaxScores[c.index] >= scoreThreshold);
     if (filtered.length > 0) clipsToProcess = filtered;
   }
 
