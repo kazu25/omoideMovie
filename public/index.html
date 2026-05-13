@@ -648,6 +648,29 @@ let selectedMood = '明るくポップ';
 let resultVideoBlob = null;
 let bgmFile = null;
 let generatedLyrics = '';
+let wakeLock = null; // Screen Wake Lock API
+
+async function requestWakeLock() {
+  if (!('wakeLock' in navigator)) return; // 非対応ブラウザは無視
+  try {
+    wakeLock = await navigator.wakeLock.request('screen');
+    // 画面復帰時に自動再取得（visibilitychangeで解放されるため）
+    document.addEventListener('visibilitychange', async () => {
+      if (wakeLock !== null && document.visibilityState === 'visible') {
+        wakeLock = await navigator.wakeLock.request('screen').catch(() => null);
+      }
+    }, { once: false });
+  } catch(e) {
+    console.warn('Wake Lock 取得失敗:', e.message);
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock) {
+    wakeLock.release().catch(() => {});
+    wakeLock = null;
+  }
+}
 
 // ────────────────────────────────────────
 //  UI HELPERS
@@ -839,6 +862,8 @@ async function startAnalyze() {
   progWrap.style.display = 'block';
   setStatus('analyze-status', '分析中', 'running');
 
+  await requestWakeLock(); // 処理中に画面がOFFになるのを防止
+
   try {
     // 1. 各動画をGeminiで分析してスコアリング（無料枠15req/分に収まるよう4秒間隔）
     const scores = [];
@@ -908,6 +933,7 @@ async function startAnalyze() {
 
     btn.disabled = false;
     btn.innerHTML = '✦ 再生成する';
+    releaseWakeLock(); // 処理完了後に解放
 
   } catch(err) {
     document.getElementById('processing-banner').style.display = 'none';
@@ -915,6 +941,7 @@ async function startAnalyze() {
     btn.disabled = false;
     btn.innerHTML = '✦ AIでシーン分析・動画生成を開始';
     setStatus('analyze-status', 'エラー');
+    releaseWakeLock(); // エラー時も確実に解放
   }
 }
 
