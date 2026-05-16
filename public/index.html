@@ -1279,6 +1279,7 @@ async function buildCompositeVideo(scenes) {
       Math.max(0, (v.duration || 10) - (scene.actualDuration || 3) - 0.2)
     ));
     v.currentTime = seekTo;
+    v._seekTo = seekTo; // 残り尺計算用
     await new Promise(resolve => {
       const t = setTimeout(resolve, 5000);
       v.onseeked = () => {
@@ -1432,7 +1433,9 @@ async function buildCompositeVideo(scenes) {
       const scene   = allScenes[si];
       const v       = videoEls[si];
       const nextV   = si + 1 < allScenes.length ? videoEls[si + 1] : undefined;
-      const clipMs  = Math.max(1000, (scene.actualDuration || 3) * 1000);
+      const wantedMs  = Math.max(1000, (scene.actualDuration || 3) * 1000);
+      const videoCapMs = v ? Math.max(0, ((v.duration || 10) - (v._seekTo || 0)) * 1000) : Infinity;
+      const clipMs     = Math.max(DISSOLVE_S * 1000 + 100, Math.min(wantedMs, videoCapMs));
       const dissolveStartMs = clipMs - DISSOLVE_S * 1000;
 
       // 録画ループ開始：プリバッファ済みなのでそのまま再生
