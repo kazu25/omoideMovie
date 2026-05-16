@@ -1283,11 +1283,10 @@ async function buildCompositeVideo(scenes) {
   const INTERVAL   = Math.round(1000 / FPS); // 33ms
   const DISSOLVE_S = 0.7;  // ディゾルブ秒数
 
-  // 末尾に白フレーム用ダミーシーンを2つ追加してディゾルブで白へ
+  // 末尾に白フェードアウト用ダミーシーンを1つ追加
   const allScenes = [
     ...scenes,
-    { actualDuration: 0.8, isWhite: true },
-    { actualDuration: 0.8, isWhite: true }
+    { actualDuration: 0.5, isWhite: true }
   ];
 
   // --- STEP1: 各シーンの動画要素を生成・シーク（白シーンはnull）---
@@ -1469,9 +1468,13 @@ async function buildCompositeVideo(scenes) {
       const scene   = allScenes[si];
       const v       = videoEls[si];
       const nextV   = si + 1 < allScenes.length ? videoEls[si + 1] : undefined;
-      const wantedMs  = Math.max(1000, (scene.actualDuration || 3) * 1000);
+      const wantedMs  = scene.isWhite
+        ? Math.max(100, (scene.actualDuration || 0.5) * 1000)
+        : Math.max(1000, (scene.actualDuration || 3) * 1000);
       const videoCapMs = v ? Math.max(0, ((v.duration || 10) - (v._seekTo || 0)) * 1000) : Infinity;
-      const clipMs     = Math.max(DISSOLVE_S * 1000 + 100, Math.min(wantedMs, videoCapMs));
+      const clipMs     = scene.isWhite
+        ? wantedMs
+        : Math.max(DISSOLVE_S * 1000 + 100, Math.min(wantedMs, videoCapMs));
       const dissolveStartMs = clipMs - DISSOLVE_S * 1000;
 
       // 録画ループ開始：プリバッファ済みなのでそのまま再生
