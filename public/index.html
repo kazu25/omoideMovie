@@ -303,6 +303,7 @@ input[type=range]::-webkit-slider-thumb{
   display:none;
 }
 .result-video-wrap video{width:100%;max-height:280px;object-fit:contain}
+.result-video-wrap canvas{width:100%;max-height:280px;object-fit:contain;display:block;}
 
 /* ── ERROR / SUCCESS ── */
 .err{margin-top:10px;padding:10px 14px;background:var(--red-pale);border:1px solid rgba(192,80,80,.3);border-radius:10px;font-size:12px;color:#e08080;display:none}
@@ -882,16 +883,32 @@ async function buildVideoFromSelection() {
   document.getElementById('analyze-prog').style.display = 'block';
 
   await requestWakeLock();
+
+  // ライブcanvas が来たら即座にプレビュー表示してスクロール
+  const wrap = document.getElementById('result-video-wrap');
+  const rv   = document.getElementById('result-video');
+  const onLiveCanvas = ({ detail: lc }) => {
+    lc.id = 'live-preview-canvas';
+    rv.style.display = 'none';
+    wrap.insertBefore(lc, wrap.firstChild);
+    wrap.style.display = 'block';
+    lc.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  document.addEventListener('liveCanvas', onLiveCanvas, { once: true });
+
   try {
     setProgress('analyze-prog-fill', 'analyze-prog-label', 20, '動画を合成中（ディゾルブ処理）...');
     const mergedBlob = await buildCompositeVideo(selectedClips);
     resultVideoBlob = mergedBlob;
 
-    const url = URL.createObjectURL(mergedBlob);
-    const rv  = document.getElementById('result-video');
-    rv.src = url;
+    // ライブcanvasを最終動画に差し替え
+    const lc = document.getElementById('live-preview-canvas');
+    if (lc) lc.remove();
+    rv.style.display = '';
+    rv.src = URL.createObjectURL(mergedBlob);
     rv.load();
-    document.getElementById('result-video-wrap').style.display = 'block';
+    wrap.style.display = 'block';
+    rv.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
     setProgress('analyze-prog-fill', 'analyze-prog-label', 70, '歌詞を生成中...');
 
@@ -917,6 +934,10 @@ async function buildVideoFromSelection() {
     btn.innerHTML = '▶ この選択で動画を再生成';
     releaseWakeLock();
   } catch(err) {
+    document.removeEventListener('liveCanvas', onLiveCanvas);
+    const lc = document.getElementById('live-preview-canvas');
+    if (lc) lc.remove();
+    rv.style.display = '';
     document.getElementById('processing-banner').style.display = 'none';
     showErr('analyze-err', 'エラー: ' + err.message);
     btn.disabled = false;
@@ -1358,6 +1379,9 @@ async function buildCompositeVideo(scenes) {
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
+
+  // ライブプレビュー用：canvas準備完了を通知
+  document.dispatchEvent(new CustomEvent('liveCanvas', { detail: canvas }));
 
   // ビットレート：解像度に応じて設定（ブラウザエンコードの限界を考慮）
   const pixels = W * H;
