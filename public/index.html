@@ -1289,6 +1289,31 @@ async function buildCompositeVideo(scenes) {
     { actualDuration: 0.5, isWhite: true }
   ];
 
+  // --- STEP0: キャンバスを早期作成してライブプレビューを即時表示 ---
+  let W = 1080, H = 1920;
+  {
+    const probe = document.createElement('video');
+    probe.src = URL.createObjectURL(scenes[0].file);
+    probe.muted = true;
+    probe.preload = 'metadata';
+    await new Promise(r => {
+      probe.onloadedmetadata = () => { W = probe.videoWidth || 1080; H = probe.videoHeight || 1920; r(); };
+      setTimeout(r, 2000);
+      probe.load();
+    });
+    probe.src = '';
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#888';
+  ctx.font = `bold ${Math.round(H * 0.03)}px sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText('動画を準備中...', W / 2, H / 2);
+  document.dispatchEvent(new CustomEvent('liveCanvas', { detail: canvas }));
+
   // --- STEP1: 各シーンの動画要素を生成・シーク（白シーンはnull）---
   setProgress('analyze-prog-fill', 'analyze-prog-label', 66, '動画をプリロード中...');
   const videoEls = [];
@@ -1352,27 +1377,29 @@ async function buildCompositeVideo(scenes) {
     } catch(e) { return null; }
   });
 
-  // --- STEP2: キャンバスサイズを元動画から動的に決定 ---
-  // 最初の実動画要素からサイズを取得
+  // --- STEP1.6: createMediaElementSourceでリセットされたreadyStateを回復 ---
+  for (const vel of videoEls) {
+    if (vel === null) continue;
+    if (vel.readyState < 2) {
+      await vel.play().catch(() => {});
+      await new Promise(resolve => {
+        if (vel.readyState >= 2) { vel.pause(); resolve(); return; }
+        const t = setTimeout(() => { vel.pause(); resolve(); }, 1500);
+        const onReady = () => { clearTimeout(t); vel.removeEventListener('timeupdate', onReady); vel.pause(); resolve(); };
+        vel.addEventListener('timeupdate', onReady);
+      });
+    }
+  }
+
+  // --- STEP2: 実際の動画サイズでキャンバスを調整（STEP0の推定値と異なる場合）---
   const firstVideoEl = videoEls.find(v => v !== null);
-  let W, H;
   if (firstVideoEl && firstVideoEl.videoWidth > 0 && firstVideoEl.videoHeight > 0) {
-    W = firstVideoEl.videoWidth;
-    H = firstVideoEl.videoHeight;
-  } else {
-    // フォールバック：元ファイルリストの最初の動画から取得
-    const fallbackV = document.createElement('video');
-    fallbackV.src = URL.createObjectURL(scenes[0].file);
-    fallbackV.muted = true;
-    await new Promise(r => {
-      fallbackV.onloadedmetadata = r;
-      setTimeout(r, 3000);
-      fallbackV.load();
-    });
-    await fallbackV.play().catch(() => {});
-    fallbackV.pause();
-    W = fallbackV.videoWidth  || 1080;
-    H = fallbackV.videoHeight || 1920;
+    const actualW = firstVideoEl.videoWidth;
+    const actualH = firstVideoEl.videoHeight;
+    if (actualW !== W || actualH !== H) {
+      W = actualW; H = actualH;
+      canvas.width = W; canvas.height = H;
+    }
   }
 
   // アスペクト比を保って描画（黒帯あり）
@@ -1386,13 +1413,6 @@ async function buildCompositeVideo(scenes) {
     ctx.fillRect(0, 0, w, h);
     ctx.drawImage(src, dx, dy, dw, dh);
   }
-
-  const canvas = document.createElement('canvas');
-  canvas.width = W; canvas.height = H;
-  const ctx = canvas.getContext('2d');
-
-  // ライブプレビュー用：canvas準備完了を通知
-  document.dispatchEvent(new CustomEvent('liveCanvas', { detail: canvas }));
 
   // ビットレート：解像度に応じて設定（ブラウザエンコードの限界を考慮）
   const pixels = W * H;
