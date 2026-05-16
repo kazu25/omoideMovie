@@ -427,29 +427,8 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
 
   <div class="pipeline">
 
-    <!-- STEP 1: API Key -->
-    <div class="pipe-step active open" id="step-api">
-      <div class="pipe-head" onclick="toggleStep('step-api')">
-        <div class="pipe-icon">🔑</div>
-        <div class="pipe-label">
-          <div class="pipe-label-main">Gemini API キー</div>
-          <div class="pipe-label-sub">シーン分析・歌詞生成に使います</div>
-        </div>
-        <div class="pipe-status" id="api-status">未入力</div>
-      </div>
-      <div class="pipe-body">
-        <div class="input-row">
-          <input type="password" id="api-key" placeholder="AIza..." oninput="onApiKeyInput()">
-        </div>
-        <p class="hint">
-          <a href="https://aistudio.google.com/app/apikey" target="_blank">Google AI Studio</a>
-          で無料取得できます。キーはお使いのブラウザ内のみで使用し、外部に送信しません。
-        </p>
-      </div>
-    </div>
-
-    <!-- STEP 2: Upload -->
-    <div class="pipe-step" id="step-upload">
+    <!-- STEP 1: Upload -->
+    <div class="pipe-step active open" id="step-upload">
       <div class="pipe-head" onclick="toggleStep('step-upload')">
         <div class="pipe-icon">🎥</div>
         <div class="pipe-label">
@@ -642,7 +621,6 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
 // ────────────────────────────────────────
 //  STATE
 // ────────────────────────────────────────
-let apiKey = '';
 let videoFiles = [];
 let selectedMood = '明るくポップ';
 let resultVideoBlob = null;
@@ -712,22 +690,7 @@ function setProgress(fillId, labelId, pct, label) {
 }
 
 // ────────────────────────────────────────
-//  STEP 1: API KEY
-// ────────────────────────────────────────
-function onApiKeyInput() {
-  apiKey = document.getElementById('api-key').value.trim();
-  if (apiKey.length > 10) {
-    setStatus('api-status', '✓ 入力済み', 'ok');
-    markDone('step-api', '✓ 設定済み');
-    openStep('step-upload');
-    checkAnalyzeReady();
-  } else {
-    setStatus('api-status', '未入力');
-  }
-}
-
-// ────────────────────────────────────────
-//  STEP 2: UPLOAD
+//  STEP 1: UPLOAD
 // ────────────────────────────────────────
 function onVideosSelected(e) {
   const files = Array.from(e.target.files).slice(0, 20);
@@ -761,7 +724,7 @@ function renderFileList() {
 
 function checkAnalyzeReady() {
   const btn = document.getElementById('analyze-btn');
-  btn.disabled = !(apiKey && videoFiles.length > 0);
+  btn.disabled = !(videoFiles.length > 0);
 }
 
 // ────────────────────────────────────────
@@ -962,7 +925,7 @@ async function captureFrames(file, times) {
         // シーク後にデコードが追いつくまで少し待つ（黒フレーム対策）
         const tryCapture = (attempt) => {
           const c = document.createElement('canvas');
-          c.width = 480; c.height = Math.round(480 * v.videoHeight / (v.videoWidth || 480));
+          c.width = 512; c.height = Math.round(512 * v.videoHeight / (v.videoWidth || 512));
           const ctx2 = c.getContext('2d');
           ctx2.drawImage(v, 0, 0, c.width, c.height);
           // 黒フレーム検出：画素の平均輝度が5以下なら再試行
@@ -1049,17 +1012,17 @@ start_secは必ずフレームの撮影時刻を使用してください。動�
       ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
     ];
 
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    const res = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gemini-2.5-flash-lite',
+        body: {
           contents: [{ parts }],
           generationConfig: { temperature: 0.1, maxOutputTokens: 1200 }
-        })
-      }
-    );
+        }
+      })
+    });
 
     if (!res.ok) {
       const e = await res.json();
@@ -1453,7 +1416,6 @@ function waitFrame(ms) {
 async function generateLyria() {
   const lyrics = document.getElementById('lyrics-box').value.trim();
   if (!lyrics) { showErr('lyria-err', '先に歌詞を生成してください'); return; }
-  if (!apiKey)  { showErr('lyria-err', 'APIキーを入力してください'); return; }
 
   hideErr('lyria-err');
   document.getElementById('lyria-success').style.display = 'none';
@@ -1505,16 +1467,16 @@ async function generateLyria() {
 
     setProgress('lyria-prog-fill', 'lyria-prog-label', 30, 'BGMを生成中（しばらくお待ちください）...');
 
-    const res = await fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/lyria-3-pro-preview:generateContent?key=' + apiKey,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+    const res = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'lyria-3-pro-preview',
+        body: {
           contents: [{ parts: [{ text: prompt }] }]
-        })
-      }
-    );
+        }
+      })
+    });
 
     if (!res.ok) {
       const e = await res.json();
@@ -1562,10 +1524,6 @@ async function generateLyria() {
 async function regenerateLyrics() {
   if (!window._selectedScenes || !window._topVideo) {
     document.getElementById('regen-lyrics-err').textContent = '先にシーン分析を実行してください';
-    return;
-  }
-  if (!apiKey) {
-    document.getElementById('regen-lyrics-err').textContent = 'APIキーを入力してください';
     return;
   }
   document.getElementById('regen-lyrics-err').textContent = '';
@@ -1644,20 +1602,20 @@ ${sceneDescriptions}
 - J-POPらしい自然なリズム感（7・5調や8・8調など）
 - 「思い出」「大切な君」などの使い古した表現は避ける`;
 
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+  const res = await fetch('/api/gemini', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: 'gemini-2.5-flash-lite',
+      body: {
         contents: [{ parts: [
           { text: prompt },
           ...frameParts
         ]}],
         generationConfig: { temperature: 0.8, maxOutputTokens: 1024 }
-      })
-    }
-  );
+      }
+    })
+  });
 
   if (!res.ok) {
     const e = await res.json();
