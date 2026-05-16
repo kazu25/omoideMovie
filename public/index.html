@@ -530,10 +530,8 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
         <div style="margin-top:14px;padding:16px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;">
           <div style="font-size:12px;color:var(--gold);font-weight:500;margin-bottom:6px;">✦ MiniMax Music 2.7 で自動生成（推奨）</div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.8;">
-            歌詞からBGMを全自動生成します。<a href="https://platform.minimax.io/user-center/basic-information/interface-key" target="_blank" style="color:var(--gold)">MiniMax APIキー</a>が必要です（現在2週間無料）。
+            歌詞からBGMを全自動生成します。
           </div>
-          <input type="password" id="minimax-api-key" placeholder="MiniMax APIキーを入力（sk-...）"
-            style="width:100%;margin-bottom:10px;padding:10px 14px;border:1px solid var(--border2);border-radius:10px;background:var(--bg4);color:var(--cream);font-family:inherit;font-size:13px;outline:none;">
           <div style="display:flex;gap:8px;margin-bottom:10px;">
             <select id="minimax-model" style="flex:1;padding:9px 12px;border:1px solid var(--border2);border-radius:10px;background:var(--bg4);color:var(--cream);font-family:inherit;font-size:12px;outline:none;">
               <option value="music-2.7">music-2.7（有料・高品質）</option>
@@ -1785,11 +1783,9 @@ ${sceneDescriptions}
 // ── MiniMax Music 2.7 BGM自動生成 ──
 async function generateMiniMax() {
   const lyrics = document.getElementById('lyrics-box').value.trim();
-  const minimaxKey = document.getElementById('minimax-api-key').value.trim();
   const model = document.getElementById('minimax-model').value;
 
-  if (!lyrics)      { showErr('minimax-err', '先に歌詞を生成してください'); return; }
-  if (!minimaxKey)  { showErr('minimax-err', 'MiniMax APIキーを入力してください'); return; }
+  if (!lyrics) { showErr('minimax-err', '先に歌詞を生成してください'); return; }
 
   hideErr('minimax-err');
   document.getElementById('minimax-success').style.display = 'none';
@@ -1843,15 +1839,12 @@ async function generateMiniMax() {
 
     setProgress('minimax-prog-fill', 'minimax-prog-label', 25, 'BGMを生成中...');
 
-    const res = await fetch('https://api.minimax.io/v1/music_generation', {
+    const res = await fetch('/api/minimax', {
       method: 'POST',
-      headers: {
-        'Authorization': 'Bearer ' + minimaxKey,
-        'Content-Type': 'application/json'
-      },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: model,
-        prompt: prompt,
+        model,
+        prompt,
         lyrics: lyricsForMinimax,
         output_format: 'hex',
         audio_setting: {
