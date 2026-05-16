@@ -1068,31 +1068,34 @@ async function captureFrames(file, times) {
 }
 
 async function analyzeVideoWithGemini(file, index) {
+  // ── フレーム取得（リトライ対象外）──
+  let frames, frameTimes, dur;
   try {
     const v = document.createElement('video');
     v.src = URL.createObjectURL(file);
     v.muted = true;
     await new Promise(r => { v.onloadedmetadata = r; v.onerror = r; });
-    const dur = v.duration || 10;
+    dur = v.duration || 10;
 
-    // 動画長÷10枚（1秒単位）でフレーム間隔を決定、最大10枚
     const INTERVAL_SEC = Math.max(1, Math.round(dur / 10));
     const maxFrames = 10;
     const frameCount = Math.min(maxFrames, Math.max(1, Math.floor(dur / INTERVAL_SEC)));
-    const frameTimes = Array.from({length: frameCount}, (_, i) =>
+    frameTimes = Array.from({length: frameCount}, (_, i) =>
       Math.min((i + 1) * INTERVAL_SEC, dur - 0.1)
     );
-
-    const frames = await captureFrames(file, frameTimes);
+    frames = await captureFrames(file, frameTimes);
     if (frames.length === 0) throw new Error('フレーム取得失敗');
+  } catch(e) {
+    console.warn('Frame capture failed for video', index, e.message);
+    return await localFallbackScore(file, index);
+  }
 
-    // Geminiに「各フレームの開始時間」を明示して渡す
-    const frameInfo = frameTimes.map((t, i) =>
-      `フレーム${i+1}: ${t.toFixed(1)}秒時点`
-    ).join(', ');
+  const frameInfo = frameTimes.map((t, i) =>
+    `フレーム${i+1}: ${t.toFixed(1)}秒時点`
+  ).join(', ');
 
-    const parts = [
-      { text: `動画(${Math.round(dur)}秒)から${frames.length}枚のフレームを抽出しました。
+  const parts = [
+    { text: `動画(${Math.round(dur)}秒)から${frames.length}枚のフレームを抽出しました。
 各フレームの撮影時刻: ${frameInfo}
 
 マークダウン不使用。以下のJSONのみで回答（clipsは${frames.length}件以内）:
@@ -1117,58 +1120,67 @@ async function analyzeVideoWithGemini(file, index) {
 - 表情や感情（満面の笑み・真剣な顔など）も加える
 - 季節・天気・背景の特徴があれば加える
 start_secは必ずフレームの撮影時刻を使用してください。動画長${Math.round(dur)}秒を超えないこと。` },
-      ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
-    ];
+    ...frames.map(f => ({ inline_data: { mime_type: 'image/jpeg', data: f } }))
+  ];
 
-    const res = await fetch('/api/gemini', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gemini-2.5-flash-lite',
-        body: {
-          contents: [{ parts }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 1200 }
-        }
-      })
-    });
+  // ── APIコール：最大3回試行 ──
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const res = await fetch('/api/gemini', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gemini-2.5-flash-lite',
+          body: {
+            contents: [{ parts }],
+            generationConfig: { temperature: 0.1, maxOutputTokens: 1200 }
+          }
+        })
+      });
 
-    if (!res.ok) {
-      const e = await res.json();
-      throw new Error(e.error?.message || 'Gemini API error');
+      if (!res.ok) {
+        const e = await res.json();
+        throw new Error(e.error?.message || `HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      // 前後の余分テキストを除去して { } ブロックだけを抽出
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error('JSON block not found in response');
+      const parsed = JSON.parse(jsonMatch[0]);
+
+      const clips = (parsed.clips || []).map((c, ci) => ({
+        total: Math.round(c.score || 50),
+        bestMoment: Math.max(0, Math.min(
+          parseFloat(c.start_sec) || frameTimes[ci] || 0,
+          dur - (parseFloat(c.clip_duration_sec) || 3) - 0.1
+        )),
+        clipDuration: Math.min(Math.max(2, parseFloat(c.clip_duration_sec) || 3), 3),
+        reason: c.reason || '',
+        index,
+        clipIndex: ci,
+        file,
+        frameImage: frames[ci] || null
+      }));
+
+      return clips.length > 0 ? clips : [{
+        total: 50,
+        bestMoment: Math.round(dur * 0.3),
+        clipDuration: 3,
+        reason: '自動抽出',
+        index, clipIndex: 0, file,
+        frameImage: null
+      }];
+
+    } catch(e) {
+      console.warn(`Gemini attempt ${attempt}/3 failed for video ${index}:`, e.message);
+      if (attempt < 3) await new Promise(r => setTimeout(r, 5000 * attempt));
     }
-
-    const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
-    const clean = text.replace(/```json|```/g, '').trim();
-    const parsed = JSON.parse(clean);
-
-    const clips = (parsed.clips || []).map((c, ci) => ({
-      total: Math.round(c.score || 50),
-      bestMoment: Math.max(0, Math.min(
-        parseFloat(c.start_sec) || frameTimes[ci] || 0,
-        dur - (parseFloat(c.clip_duration_sec) || 3) - 0.1
-      )),
-      clipDuration: Math.min(Math.max(2, parseFloat(c.clip_duration_sec) || 3), 3),
-      reason: c.reason || '',
-      index,
-      clipIndex: ci,
-      file,
-      frameImage: frames[ci] || null  // サムネイル用にフレーム画像を保持
-    }));
-
-    return clips.length > 0 ? clips : [{
-      total: 50,
-      bestMoment: Math.round(dur * 0.3),
-      clipDuration: 3,
-      reason: '自動抽出',
-      index, clipIndex: 0, file,
-      frameImage: null
-    }];
-
-  } catch(e) {
-    console.warn('Gemini analysis failed for video', index, e.message);
-    return await localFallbackScore(file, index);
   }
+
+  // 3回失敗したらローカルフォールバック
+  return await localFallbackScore(file, index);
 }
 
 // Gemini失敗時のローカルフォールバック（Canvas画素解析）
