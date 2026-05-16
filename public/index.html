@@ -1368,7 +1368,6 @@ async function buildCompositeVideo(scenes) {
   const videoGains = videoEls.map(vel => {
     if (vel === null) return null;
     try {
-      vel.muted = false; // Web Audio APIにルーティング（スピーカーへは出力しない）
       const src = audioCtx.createMediaElementSource(vel);
       const g = audioCtx.createGain();
       g.gain.value = 0; // 初期は無音
@@ -1400,6 +1399,13 @@ async function buildCompositeVideo(scenes) {
     if (actualW !== W || actualH !== H) {
       W = actualW; H = actualH;
       canvas.width = W; canvas.height = H;
+      // canvas.width/height の変更でコンテンツが消えるため再描画
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = '#888';
+      ctx.font = `bold ${Math.round(H * 0.03)}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText('動画を準備中...', W / 2, H / 2);
     }
   }
 
