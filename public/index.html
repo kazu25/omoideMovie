@@ -454,7 +454,7 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
       <div class="pipe-head" onclick="toggleStep('step-analyze')">
         <div class="pipe-icon">🤖</div>
         <div class="pipe-label">
-          <div class="pipe-label-main">シーン分析・1分動画生成</div>
+          <div class="pipe-label-main">シーン分析・クリップ選択・動画生成</div>
           <div class="pipe-label-sub">AIが良いシーンを抽出してつなぎます</div>
         </div>
         <div class="pipe-status" id="analyze-status">待機中</div>
@@ -470,7 +470,7 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
         </div>
 
         <button class="btn btn-gold" id="analyze-btn" onclick="startAnalyze()" disabled>
-          ✦ AIでシーン分析・動画生成を開始
+          ✦ AIでシーン分析を開始
         </button>
 
         <div class="prog-wrap" id="analyze-prog">
@@ -497,6 +497,11 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
                    border:1px solid var(--border);border-radius:10px;
                    font-size:11px;line-height:2;overflow-x:auto;">
           </div>
+        </div>
+
+        <div id="selection-bar" style="display:none;margin-top:10px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+          <span id="selection-stats" style="font-size:12px;color:var(--cream);"></span>
+          <button class="btn btn-gold" id="build-video-btn" onclick="buildVideoFromSelection()" style="padding:6px 20px;font-size:13px;">▶ この選択で動画を生成</button>
         </div>
 
         <div class="err" id="analyze-err"></div>
@@ -745,11 +750,20 @@ function toggleClipDetail() {
 }
 
 function renderClipDetail(allClips, selected) {
-  const selectedKeys   = new Set(selected.map(s => `${s.index}-${s.bestMoment}`));
+  window._allClips    = allClips;
+  window._selectedKeys = new Set(selected.map(s => `${s.index}-${s.bestMoment}`));
+  _buildClipDetailHTML();
+  document.getElementById('clip-detail').style.display = 'block';
+  document.getElementById('clip-detail-body').style.display = 'none';
+  document.getElementById('clip-detail-arrow').textContent = '▼';
+}
+
+function _buildClipDetailHTML() {
+  const allClips       = window._allClips || [];
+  const selectedKeys   = window._selectedKeys || new Set();
   const videoMaxScores = window._videoMaxScores || {};
   const threshold      = window._scoreThreshold || 0;
 
-  // 動画インデックスごとにグループ化（登録順）
   const byVideo = {};
   for (const c of allClips) {
     if (!byVideo[c.index]) byVideo[c.index] = [];
@@ -763,10 +777,10 @@ function renderClipDetail(allClips, selected) {
   </div>`;
 
   for (const idx of Object.keys(byVideo).sort((a, b) => a - b)) {
-    const clips      = byVideo[idx].sort((a, b) => a.bestMoment - b.bestMoment);
-    const name       = videoFiles[idx] ? videoFiles[idx].name : `動画${+idx + 1}`;
-    const maxScore   = videoMaxScores[idx] || 0;
-    const excluded   = threshold > 0 && maxScore < threshold;
+    const clips       = byVideo[idx].sort((a, b) => a.bestMoment - b.bestMoment);
+    const name        = videoFiles[idx] ? videoFiles[idx].name : `動画${+idx + 1}`;
+    const maxScore    = videoMaxScores[idx] || 0;
+    const excluded    = threshold > 0 && maxScore < threshold;
     const headerColor = excluded ? 'color:#e07070' : 'color:var(--cream)';
     const badge       = excluded
       ? `<span style="background:#e07070;color:#fff;font-size:9px;padding:1px 6px;border-radius:4px;margin-left:6px;">低スコア除外</span>`
@@ -788,11 +802,12 @@ function renderClipDetail(allClips, selected) {
         : `<div style="width:80px;height:52px;background:var(--bg3);border-radius:4px;flex-shrink:0;
             display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:10px;">no img</div>`;
       const adoptedBadge = adopted
-        ? `<span style="background:var(--gold);color:#1a1510;font-size:9px;font-weight:700;
-            padding:1px 6px;border-radius:4px;">★採用</span>` : '';
+        ? `<span style="background:var(--gold);color:#1a1510;font-size:9px;font-weight:700;padding:1px 6px;border-radius:4px;">✓ 採用</span>`
+        : `<span style="background:var(--bg3);color:var(--muted);font-size:9px;padding:1px 6px;border-radius:4px;border:1px solid var(--border);">+ 追加</span>`;
 
-      html += `<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;
-          border-radius:8px;${rowBg}">
+      html += `<div onclick="toggleClipSelection('${key}')"
+          style="display:flex;align-items:center;gap:10px;padding:6px 8px;
+          border-radius:8px;cursor:pointer;user-select:none;${rowBg}">
         ${thumb}
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
@@ -807,11 +822,107 @@ function renderClipDetail(allClips, selected) {
     html += '</div></div>';
   }
 
+  document.getElementById('clip-detail-body').innerHTML = html;
+}
+
+function toggleClipSelection(key) {
+  if (!window._selectedKeys) window._selectedKeys = new Set();
+  if (window._selectedKeys.has(key)) {
+    window._selectedKeys.delete(key);
+  } else {
+    window._selectedKeys.add(key);
+  }
   const body = document.getElementById('clip-detail-body');
-  body.innerHTML = html;
-  document.getElementById('clip-detail').style.display = 'block';
-  body.style.display = 'none';
-  document.getElementById('clip-detail-arrow').textContent = '▼';
+  const wasOpen = body.style.display !== 'none';
+  _buildClipDetailHTML();
+  body.style.display = wasOpen ? 'block' : 'none';
+  updateSelectionBar();
+}
+
+function updateSelectionBar() {
+  const selectedKeys = window._selectedKeys || new Set();
+  const allClips     = window._allClips || [];
+  const sel          = allClips.filter(c => selectedKeys.has(`${c.index}-${c.bestMoment}`));
+  const totalSec     = sel.reduce((sum, c) => sum + Math.max(2, Math.min(c.clipDuration || 3, 3)), 0);
+  const color        = totalSec > 65 ? '#e07070' : 'var(--gold)';
+  document.getElementById('selection-stats').innerHTML =
+    `${sel.length}クリップ選択中 · <span style="color:${color};font-weight:700;">${totalSec}秒</span><span style="color:var(--muted);font-size:10px;"> / 目安60秒</span>`;
+}
+
+async function buildVideoFromSelection() {
+  const selectedKeys = window._selectedKeys || new Set();
+  const allClips     = window._allClips || [];
+
+  const selectedClips = allClips
+    .filter(c => selectedKeys.has(`${c.index}-${c.bestMoment}`))
+    .map(c => ({ ...c, actualDuration: Math.max(2, Math.min(c.clipDuration || 3, 3)) }));
+
+  if (selectedClips.length === 0) {
+    showErr('analyze-err', 'クリップを1つ以上選択してください');
+    return;
+  }
+  hideErr('analyze-err');
+
+  // 登録順・時刻順でソート（時系列ストーリー順）
+  selectedClips.sort((a, b) => a.index !== b.index ? a.index - b.index : a.bestMoment - b.bestMoment);
+
+  // 先頭を最高スコアのクリップに差し替え
+  if (selectedClips.length > 1) {
+    const topIdx = selectedClips.reduce((best, s, i) => s.total > selectedClips[best].total ? i : best, 0);
+    if (topIdx !== 0) {
+      const top = selectedClips.splice(topIdx, 1)[0];
+      selectedClips.unshift(top);
+    }
+  }
+
+  const btn = document.getElementById('build-video-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> 生成中...';
+  document.getElementById('processing-banner').style.display = 'block';
+  document.getElementById('analyze-prog').style.display = 'block';
+
+  await requestWakeLock();
+  try {
+    setProgress('analyze-prog-fill', 'analyze-prog-label', 20, '動画を合成中（ディゾルブ処理）...');
+    const mergedBlob = await buildCompositeVideo(selectedClips);
+    resultVideoBlob = mergedBlob;
+
+    const url = URL.createObjectURL(mergedBlob);
+    const rv  = document.getElementById('result-video');
+    rv.src = url;
+    rv.load();
+    document.getElementById('result-video-wrap').style.display = 'block';
+
+    setProgress('analyze-prog-fill', 'analyze-prog-label', 70, '歌詞を生成中...');
+
+    const sorted   = allClips.slice().sort((a, b) => b.total - a.total);
+    const topVideo = sorted[0]?.file;
+    window._selectedScenes = selectedClips;
+    window._topVideo       = topVideo;
+    window._allScores      = allClips;
+    const lyrics = await generateLyricsWithGemini(topVideo, selectedClips, allClips);
+    generatedLyrics = lyrics;
+    document.getElementById('lyrics-box').value = lyrics;
+
+    setProgress('analyze-prog-fill', 'analyze-prog-label', 100, '完了！');
+    document.getElementById('processing-banner').style.display = 'none';
+    markDone('step-analyze', '✓ 完了');
+    markDone('step-lyrics', '✓ 生成済み');
+    openStep('step-lyrics');
+    openStep('step-merge');
+    setStatus('lyrics-status', '✓ 生成済み', 'ok');
+    checkMergeReady();
+
+    btn.disabled = false;
+    btn.innerHTML = '▶ この選択で動画を再生成';
+    releaseWakeLock();
+  } catch(err) {
+    document.getElementById('processing-banner').style.display = 'none';
+    showErr('analyze-err', 'エラー: ' + err.message);
+    btn.disabled = false;
+    btn.innerHTML = '▶ この選択で動画を生成';
+    releaseWakeLock();
+  }
 }
 
 async function startAnalyze() {
@@ -858,53 +969,29 @@ async function startAnalyze() {
     const selected = selectScenes(sorted, 60);
 
     renderClipDetail(scores, selected);
-    setProgress('analyze-prog-fill', 'analyze-prog-label', 65, '動画を合成中（ディゾルブ処理）...');
+    // クリップ詳細を自動で開く
+    document.getElementById('clip-detail-body').style.display = 'block';
+    document.getElementById('clip-detail-arrow').textContent = '▲';
+    // 選択バーを表示
+    updateSelectionBar();
+    document.getElementById('selection-bar').style.display = 'flex';
 
-    // 3. 選んだシーンをディゾルブでつないで1本の動画を生成
-    const mergedBlob = await buildCompositeVideo(selected);
-    resultVideoBlob = mergedBlob;
-
-    // 4. 結果動画を表示
-    const url = URL.createObjectURL(mergedBlob);
-    const rv = document.getElementById('result-video');
-    rv.src = url;
-    rv.load();
-    document.getElementById('result-video-wrap').style.display = 'block';
-
-    setProgress('analyze-prog-fill', 'analyze-prog-label', 80, '歌詞を生成中...');
-
-    // 5. 歌詞生成
-    const topVideo = sorted[0].file;
-    window._selectedScenes = selected; // 歌詞再生成・Lyria生成時のタイムスタンプ参照用
-    window._topVideo = topVideo;        // 歌詞再生成用
-    window._allScores = scores;         // 歌詞再生成用
-    const lyrics = await generateLyricsWithGemini(topVideo, selected, scores);
-    generatedLyrics = lyrics;
-    document.getElementById('lyrics-box').value = lyrics;
-
-    setProgress('analyze-prog-fill', 'analyze-prog-label', 100, '完了！');
-
+    setProgress('analyze-prog-fill', 'analyze-prog-label', 100, '分析完了！クリップを確認・変更後、動画を生成してください');
     document.getElementById('processing-banner').style.display = 'none';
-    markDone('step-analyze', '✓ 完了');
-    markDone('step-lyrics', '✓ 生成済み');
-    openStep('step-lyrics');
-    openStep('step-merge');
-    setStatus('lyrics-status', '✓ 生成済み', 'ok');
-
-    // merge ボタン有効化チェック
-    checkMergeReady();
+    setStatus('analyze-status', '✓ 分析完了', 'ok');
+    window._allScores = scores;
 
     btn.disabled = false;
-    btn.innerHTML = '✦ 再生成する';
-    releaseWakeLock(); // 処理完了後に解放
+    btn.innerHTML = '✦ 再分析する';
+    releaseWakeLock();
 
   } catch(err) {
     document.getElementById('processing-banner').style.display = 'none';
     showErr('analyze-err', 'エラー: ' + err.message);
     btn.disabled = false;
-    btn.innerHTML = '✦ AIでシーン分析・動画生成を開始';
+    btn.innerHTML = '✦ AIでシーン分析を開始';
     setStatus('analyze-status', 'エラー');
-    releaseWakeLock(); // エラー時も確実に解放
+    releaseWakeLock();
   }
 }
 
