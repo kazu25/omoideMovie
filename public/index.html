@@ -528,15 +528,14 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
         </div>
         <div class="err" id="regen-lyrics-err"></div>
         <div style="margin-top:14px;padding:16px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;">
-          <div style="font-size:12px;color:var(--gold);font-weight:500;margin-bottom:6px;">✦ MiniMax Music 2.7 で自動生成（推奨）</div>
+          <div style="font-size:12px;color:var(--gold);font-weight:500;margin-bottom:6px;">✦ MiniMax Music 2.6 で自動生成（推奨）</div>
           <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.8;">
             歌詞からBGMを全自動生成します。
           </div>
           <div style="display:flex;gap:8px;margin-bottom:10px;">
             <select id="minimax-model" style="flex:1;padding:9px 12px;border:1px solid var(--border2);border-radius:10px;background:var(--bg4);color:var(--cream);font-family:inherit;font-size:12px;outline:none;">
-              <option value="music-2.7">music-2.7（有料・高品質）</option>
-              <option value="music-2.6">music-2.6（旧バージョン）</option>
-              <option value="music-2.6-free">music-2.6-free（旧・無料枠）</option>
+              <option value="music-2.6">music-2.6（有料・高品質）</option>
+              <option value="music-2.6-free">music-2.6-free（無料枠）</option>
             </select>
           </div>
           <button class="btn btn-gold" id="minimax-btn" onclick="generateMiniMax()" style="margin-top:0">
@@ -1780,7 +1779,7 @@ ${sceneDescriptions}
   return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-// ── MiniMax Music 2.7 BGM自動生成 ──
+// ── MiniMax Music 2.6 BGM自動生成 ──
 async function generateMiniMax() {
   const lyrics = document.getElementById('lyrics-box').value.trim();
   const model = document.getElementById('minimax-model').value;
@@ -1878,7 +1877,7 @@ async function generateMiniMax() {
     const blob = new Blob([bytes], { type: 'audio/mp3' });
     bgmFile = new File([blob], 'minimax_bgm.mp3', { type: 'audio/mp3' });
 
-    document.getElementById('bgm-name').textContent = 'MiniMax Music 2.7 生成BGM';
+    document.getElementById('bgm-name').textContent = 'MiniMax Music 2.6 生成BGM';
     document.getElementById('bgm-loaded').style.display = 'block';
     setProgress('minimax-prog-fill', 'minimax-prog-label', 100, '完了！');
     document.getElementById('minimax-success').style.display = 'block';
