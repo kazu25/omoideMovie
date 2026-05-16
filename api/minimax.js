@@ -13,15 +13,19 @@ module.exports = async function handler(req, res) {
     return res.status(400).json({ error: 'model and lyrics are required' });
   }
 
-  const mmRes = await fetch('https://api.minimax.io/v1/music_generation', {
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + apiKey,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ model, prompt, lyrics, output_format, audio_setting })
-  });
+  try {
+    const mmRes = await fetch('https://api.minimax.io/v1/music_generation', {
+      method: 'POST',
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ model, prompt, lyrics, output_format, audio_setting })
+    });
 
-  const data = await mmRes.json();
-  return res.status(mmRes.status).json(data);
+    const data = await mmRes.json();
+    return res.status(mmRes.status).json(data);
+  } catch (e) {
+    return res.status(500).json({ error: e.message || 'MiniMax request failed' });
+  }
 };

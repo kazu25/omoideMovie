@@ -1859,7 +1859,7 @@ async function generateMiniMax() {
 
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
-      throw new Error(e.base_resp?.status_msg || e.message || 'APIエラー: ' + res.status);
+      throw new Error(e.base_resp?.status_msg || e.error || e.message || 'APIエラー: ' + res.status);
     }
 
     const data = await res.json();
