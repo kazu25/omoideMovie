@@ -1176,11 +1176,11 @@ start_secは必ずフレームの撮影時刻を使用してください。動�
 
       const clips = (parsed.clips || []).map((c, ci) => ({
         total: Math.round(c.score || 50),
-        bestMoment: Math.max(0, Math.min(
+        bestMoment: Math.round(Math.max(0, Math.min(
           parseFloat(c.start_sec) || frameTimes[ci] || 0,
           dur - (parseFloat(c.clip_duration_sec) || 3) - 0.1
-        )),
-        clipDuration: Math.min(Math.max(2, parseFloat(c.clip_duration_sec) || 3), 3),
+        ))),
+        clipDuration: Math.round(Math.min(Math.max(2, parseFloat(c.clip_duration_sec) || 3), 3)),
         reason: c.reason || '',
         index,
         clipIndex: ci,
