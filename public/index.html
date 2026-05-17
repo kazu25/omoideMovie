@@ -529,8 +529,17 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
         <div class="err" id="regen-lyrics-err"></div>
         <div style="margin-top:14px;padding:16px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;">
           <div style="font-size:12px;color:var(--gold);font-weight:500;margin-bottom:6px;">✦ MiniMax Music 2.6 で自動生成（推奨）</div>
-          <div style="font-size:11px;color:var(--muted);margin-bottom:12px;line-height:1.8;">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:10px;line-height:1.8;">
             歌詞からBGMを全自動生成します。
+          </div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">曲調：</div>
+          <div id="minimax-style-grid" style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:12px;">
+            <button class="mood-btn sel" id="mstyle-jpop"     onclick="selectMinimaxStyle('jpop')"     style="padding:8px 4px;"><span class="mood-emoji" style="font-size:16px;">🇯🇵</span><span class="mood-label">J-pop</span></button>
+            <button class="mood-btn"     id="mstyle-kpop"     onclick="selectMinimaxStyle('kpop')"     style="padding:8px 4px;"><span class="mood-emoji" style="font-size:16px;">🇰🇷</span><span class="mood-label">K-pop</span></button>
+            <button class="mood-btn"     id="mstyle-pop"      onclick="selectMinimaxStyle('pop')"      style="padding:8px 4px;"><span class="mood-emoji" style="font-size:16px;">🌍</span><span class="mood-label">洋楽Pop</span></button>
+            <button class="mood-btn"     id="mstyle-ballad"   onclick="selectMinimaxStyle('ballad')"   style="padding:8px 4px;"><span class="mood-emoji" style="font-size:16px;">🎹</span><span class="mood-label">バラード</span></button>
+            <button class="mood-btn"     id="mstyle-acoustic" onclick="selectMinimaxStyle('acoustic')" style="padding:8px 4px;"><span class="mood-emoji" style="font-size:16px;">🎸</span><span class="mood-label">アコースティック</span></button>
+            <button class="mood-btn"     id="mstyle-citypop"  onclick="selectMinimaxStyle('citypop')"  style="padding:8px 4px;"><span class="mood-emoji" style="font-size:16px;">🌆</span><span class="mood-label">シティポップ</span></button>
           </div>
           <div style="display:flex;gap:8px;margin-bottom:10px;">
             <select id="minimax-model" style="flex:1;padding:9px 12px;border:1px solid var(--border2);border-radius:10px;background:var(--bg4);color:var(--cream);font-family:inherit;font-size:12px;outline:none;">
@@ -630,7 +639,24 @@ let selectedMood = '明るくポップ';
 let resultVideoBlob = null;
 let bgmFile = null;
 let generatedLyrics = '';
+let minimaxStyle = 'jpop';
 let wakeLock = null; // Screen Wake Lock API
+
+const MINIMAX_STYLES = {
+  jpop:     { prompt: 'J-pop, authentic Japanese pop music, Yoasobi or Hikaru Utada style, Japanese vocalist, warm emotional production, melodic hooks, professional J-pop studio quality' },
+  kpop:     { prompt: 'K-pop, modern Korean pop, polished idol group production, powerful catchy chorus, punchy beat, professional studio quality' },
+  pop:      { prompt: 'Western pop, contemporary English pop production, radio-friendly, upbeat catchy melody, modern pop sound, professional studio quality' },
+  ballad:   { prompt: 'emotional ballad, piano-led arrangement, orchestral strings, heartfelt sincere vocals, slow to mid tempo, cinematic emotional atmosphere' },
+  acoustic: { prompt: 'acoustic folk pop, fingerpicked acoustic guitar, warm intimate vocals, soft percussion, organic natural sound, gentle and soothing' },
+  citypop:  { prompt: 'Japanese city pop, 80s retro style, smooth jazz-infused grooves, slap bass, warm synth pads, dreamy atmosphere, Mariya Takeuchi or Tatsuro Yamashita style' },
+};
+
+function selectMinimaxStyle(key) {
+  minimaxStyle = key;
+  document.querySelectorAll('#minimax-style-grid .mood-btn').forEach(b => b.classList.remove('sel'));
+  const btn = document.getElementById('mstyle-' + key);
+  if (btn) btn.classList.add('sel');
+}
 
 async function requestWakeLock() {
   if (!('wakeLock' in navigator)) return; // 非対応ブラウザは無視
@@ -1797,13 +1823,8 @@ async function generateMiniMax() {
   try {
     // 歌詞からスタイルタグと本文を分離
     const lines = lyrics.split('\n');
-    const styleLine = lines.find(l => l.toLowerCase().includes('[style:'));
-    const styleInner = styleLine
-      ? styleLine.replace(/.*\[style:/i, '').replace(/\].*/, '').trim()
-      : 'japanese pop, warm, gentle vocals, acoustic';
 
-    // MiniMax用に歌詞タグを変換
-    // [Verse 1] → [verse], [Chorus] → [chorus] など
+    // MiniMax用に歌詞タグを変換（スタイルタグは除外）
     let lyricsForMinimax = lines
       .filter(l => !l.toLowerCase().includes('[style:'))
       .join('\n')
@@ -1815,16 +1836,8 @@ async function generateMiniMax() {
       .replace(/\[Intro\]/gi, '[intro]')
       .trim();
 
-    // プロンプト：J-POP特化・イントロなし厳命
-    // styleInnerからアジア系の指定を除いてJ-POP色を強化
-    const jpopEnhanced = styleInner
-      .replace(/k-?pop/gi, 'J-pop')
-      .replace(/c-?pop/gi, 'J-pop')
-      .replace(/mandopop/gi, 'J-pop');
-    const prompt = 'J-pop, Japanese pop music style, ' + jpopEnhanced + ', ' +
-      'authentic Japanese pop production like Hikaru Utada or Yoasobi style, ' +
-      'Japanese female or male vocalist, ' +
-      'professional J-pop studio quality, warm emotional, ' +
+    const stylePrompt = (MINIMAX_STYLES[minimaxStyle] || MINIMAX_STYLES.jpop).prompt;
+    const prompt = stylePrompt + ', ' +
       'IMPORTANT: absolutely no instrumental intro, no prelude, no musical intro section, ' +
       'vocals must begin on the very first beat of the song, ' +
       'start singing immediately with the first lyric line';
