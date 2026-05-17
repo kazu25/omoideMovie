@@ -479,10 +479,6 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
           <div class="prog-bar"><div class="prog-fill" id="analyze-prog-fill"></div></div>
         </div>
 
-        <div class="result-video-wrap" id="result-video-wrap">
-          <video id="result-video" controls playsinline></video>
-        </div>
-
         <div class="video-grid" id="score-grid"></div>
 
         <div id="clip-detail" style="display:none;margin-top:14px;">
@@ -490,7 +486,7 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
             style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;
                    padding:10px 14px;background:var(--bg3);border:1px solid var(--border);
                    border-radius:10px;font-size:12px;color:var(--gold);font-weight:500;">
-            <span>🔍 分析詳細（クリップ一覧）</span>
+            <span>🔍 クリップを確認・変更する</span>
             <span id="clip-detail-arrow">▼</span>
           </div>
           <div id="clip-detail-body"
@@ -503,6 +499,10 @@ footer p{font-size:11px;color:var(--muted);line-height:2.2}
         <div id="selection-bar" style="display:none;margin-top:10px;padding:10px 14px;background:var(--bg3);border:1px solid var(--border);border-radius:10px;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
           <span id="selection-stats" style="font-size:12px;color:var(--cream);"></span>
           <button class="btn btn-gold" id="build-video-btn" onclick="buildVideoFromSelection()" style="padding:6px 20px;font-size:13px;">▶ この選択で動画を生成</button>
+        </div>
+
+        <div class="result-video-wrap" id="result-video-wrap">
+          <video id="result-video" controls playsinline></video>
         </div>
 
         <div class="err" id="analyze-err"></div>
@@ -1014,14 +1014,14 @@ async function startAnalyze() {
     const selected = selectScenes(sorted, 60);
 
     renderClipDetail(scores, selected);
-    // クリップ詳細を自動で開く
-    document.getElementById('clip-detail-body').style.display = 'block';
-    document.getElementById('clip-detail-arrow').textContent = '▲';
-    // 選択バーを表示
     updateSelectionBar();
     document.getElementById('selection-bar').style.display = 'flex';
 
-    setProgress('analyze-prog-fill', 'analyze-prog-label', 100, '分析完了！クリップを確認・変更後、動画を生成してください');
+    setProgress('analyze-prog-fill', 'analyze-prog-label', 100, '分析完了！');
+    // 選択バー（動画生成ボタン）へスクロール
+    setTimeout(() => {
+      document.getElementById('selection-bar').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 300);
     document.getElementById('processing-banner').style.display = 'none';
     setStatus('analyze-status', '✓ 分析完了', 'ok');
     window._allScores = scores;
