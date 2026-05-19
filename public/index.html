@@ -776,7 +776,7 @@ function toggleClipDetail() {
 
 function renderClipDetail(allClips, selected) {
   window._allClips    = allClips;
-  window._selectedKeys = new Set(selected.map(s => `${s.index}-${s.bestMoment}`));
+  window._selectedKeys = new Set(selected.map(s => `${s.index}-${s.clipIndex}`));
   _buildClipDetailHTML();
   document.getElementById('clip-detail').style.display = 'block';
   document.getElementById('clip-detail-body').style.display = 'none';
@@ -816,7 +816,7 @@ function _buildClipDetailHTML() {
       <div style="display:flex;flex-direction:column;gap:6px;">`;
 
     for (const c of clips) {
-      const key         = `${c.index}-${c.bestMoment}`;
+      const key         = `${c.index}-${c.clipIndex}`;
       const adopted     = selectedKeys.has(key);
       const scoreColor  = c.total >= 70 ? '#7ecb7e' : c.total >= 50 ? 'var(--cream)' : '#e07070';
       const rowBg       = adopted ? 'background:rgba(200,160,60,0.1);border:1px solid rgba(200,160,60,0.3)'
@@ -867,7 +867,7 @@ function toggleClipSelection(key) {
 function updateSelectionBar() {
   const selectedKeys = window._selectedKeys || new Set();
   const allClips     = window._allClips || [];
-  const sel          = allClips.filter(c => selectedKeys.has(`${c.index}-${c.bestMoment}`));
+  const sel          = allClips.filter(c => selectedKeys.has(`${c.index}-${c.clipIndex}`));
   const totalSec     = sel.reduce((sum, c) => sum + Math.max(2, Math.min(c.clipDuration || 3, 3)), 0);
   const color        = totalSec > 65 ? '#e07070' : 'var(--gold)';
   document.getElementById('selection-stats').innerHTML =
@@ -879,7 +879,7 @@ async function buildVideoFromSelection() {
   const allClips     = window._allClips || [];
 
   const selectedClips = allClips
-    .filter(c => selectedKeys.has(`${c.index}-${c.bestMoment}`))
+    .filter(c => selectedKeys.has(`${c.index}-${c.clipIndex}`))
     .map(c => ({ ...c, actualDuration: Math.max(2, Math.min(c.clipDuration || 3, 3)) }));
 
   if (selectedClips.length === 0) {
